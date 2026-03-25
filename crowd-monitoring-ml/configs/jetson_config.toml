@@ -1,0 +1,44 @@
+# Crowd Monitoring ML Configuration
+# Jetson Orin Nano Settings
+
+[camera]
+source = 0
+width = 1280
+height = 720
+fps = 30
+
+[inference]
+target_fps = 15
+use_tensorrt = true
+device = "cuda"
+
+[pose_estimation]
+model = "yolov8n-pose.pt"
+confidence_threshold = 0.5
+max_detections = 50
+
+[fall_detection]
+use_lstm = false
+hip_velocity_threshold = 150.0
+stillness_duration = 1.5
+window_size = 20
+
+[density_estimation]
+backend = "auto"
+input_width = 640
+input_height = 480
+
+[optical_flow]
+magnitude_threshold = 5.0
+panic_threshold = 15.0
+divergence_threshold = 0.5
+grid_size = [8, 6]
+
+[gps]
+connection = "/dev/ttyACM0"
+baud_rate = 115200
+cache_interval = 0.5
+
+[server]
+host = "192.168.1.100"
+port = 9000

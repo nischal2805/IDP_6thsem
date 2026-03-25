@@ -1,0 +1,6 @@
+pysocialforce
+numpy
+scipy
+fastapi
+uvicorn[standard]
+python-socketio

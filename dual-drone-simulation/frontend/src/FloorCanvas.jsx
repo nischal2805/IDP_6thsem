@@ -1,0 +1,305 @@
+import { useEffect, useRef } from 'react';
+import * as PIXI from 'pixi.js';
+
+// Dimensions
+const INDOOR_WIDTH = 20;
+const INDOOR_HEIGHT = 20;
+const OUTDOOR_WIDTH = 20;
+const OUTDOOR_HEIGHT = 15;
+const DOOR_WIDTH = 2;
+const DOOR_X = INDOOR_WIDTH / 2;
+
+// Canvas scaling
+const SCALE = 18;
+const CANVAS_WIDTH = INDOOR_WIDTH * SCALE;
+const CANVAS_HEIGHT = (INDOOR_HEIGHT + OUTDOOR_HEIGHT + 2) * SCALE;
+
+// Colors
+const COLORS = {
+  background: 0x1a1a2e,
+  indoor: 0x252540,
+  outdoor: 0x1e1e32,
+  wall: 0x4a4a6c,
+  door: 0x22c55e,
+  doorClosed: 0xef4444,
+  agent: 0x3b82f6,
+  agentSlow: 0x06b6d4,
+  agentPanic: 0xef4444,
+  heatmapLow: 0x22c55e,
+  heatmapMed: 0xeab308,
+  heatmapHigh: 0xef4444,
+};
+
+export default function FloorCanvas({ simState, onCanvasClick }) {
+  const containerRef = useRef(null);
+  const appRef = useRef(null);
+  const agentContainerRef = useRef(null);
+  const heatmapContainerRef = useRef(null);
+
+  // Initialize PIXI
+  useEffect(() => {
+    if (!containerRef.current || appRef.current) return;
+
+    const app = new PIXI.Application({
+      width: CANVAS_WIDTH,
+      height: CANVAS_HEIGHT,
+      backgroundColor: COLORS.background,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+    });
+
+    containerRef.current.appendChild(app.view);
+    appRef.current = app;
+
+    // Create layers
+    const heatmapContainer = new PIXI.Container();
+    const staticContainer = new PIXI.Container();
+    const agentContainer = new PIXI.Container();
+    
+    app.stage.addChild(heatmapContainer);
+    app.stage.addChild(staticContainer);
+    app.stage.addChild(agentContainer);
+    
+    heatmapContainerRef.current = heatmapContainer;
+    agentContainerRef.current = agentContainer;
+
+    // Draw static elements
+    drawStaticElements(staticContainer, simState?.gate || 'OPEN');
+
+    // Handle click for panic injection
+    app.stage.interactive = true;
+    app.stage.hitArea = new PIXI.Rectangle(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    app.stage.on('pointerdown', (event) => {
+      const pos = event.data.global;
+      const simX = pos.x / SCALE;
+      const simY = (CANVAS_HEIGHT - pos.y) / SCALE - OUTDOOR_HEIGHT - 1;
+      if (onCanvasClick) {
+        onCanvasClick(simX, simY);
+      }
+    });
+
+    return () => {
+      app.destroy(true, { children: true, texture: true, baseTexture: true });
+      appRef.current = null;
+    };
+  }, []);
+
+  // Update on state change
+  useEffect(() => {
+    if (!appRef.current || !simState) return;
+
+    const agentContainer = agentContainerRef.current;
+    const heatmapContainer = heatmapContainerRef.current;
+
+    // Clear previous frame
+    agentContainer.removeChildren();
+    heatmapContainer.removeChildren();
+
+    // Draw heatmap
+    if (simState.indoor_heatmap) {
+      drawHeatmap(heatmapContainer, simState.indoor_heatmap, 'indoor');
+    }
+    if (simState.outdoor_heatmap) {
+      drawHeatmap(heatmapContainer, simState.outdoor_heatmap, 'outdoor');
+    }
+
+    // Draw agents
+    drawAgents(agentContainer, simState.agents);
+
+    // Update door color based on gate state
+    updateDoorColor(appRef.current.stage, simState.gate);
+
+  }, [simState]);
+
+  return (
+    <div 
+      ref={containerRef} 
+      className="rounded-lg overflow-hidden border-2 border-sim-border"
+      style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}
+    />
+  );
+}
+
+function drawStaticElements(container, gateState) {
+  const graphics = new PIXI.Graphics();
+  
+  // Indoor area background
+  graphics.beginFill(COLORS.indoor, 0.3);
+  graphics.drawRect(0, 0, CANVAS_WIDTH, INDOOR_HEIGHT * SCALE);
+  graphics.endFill();
+
+  // Outdoor area background
+  graphics.beginFill(COLORS.outdoor, 0.3);
+  graphics.drawRect(0, INDOOR_HEIGHT * SCALE + SCALE, CANVAS_WIDTH, OUTDOOR_HEIGHT * SCALE);
+  graphics.endFill();
+
+  // Walls
+  graphics.lineStyle(3, COLORS.wall);
+  
+  // Indoor walls
+  // Left wall
+  graphics.moveTo(0, 0);
+  graphics.lineTo(0, INDOOR_HEIGHT * SCALE);
+  
+  // Right wall
+  graphics.moveTo(CANVAS_WIDTH, 0);
+  graphics.lineTo(CANVAS_WIDTH, INDOOR_HEIGHT * SCALE);
+  
+  // Top wall
+  graphics.moveTo(0, 0);
+  graphics.lineTo(CANVAS_WIDTH, 0);
+  
+  // Bottom wall with door gap
+  const doorLeft = (DOOR_X - DOOR_WIDTH / 2) * SCALE;
+  const doorRight = (DOOR_X + DOOR_WIDTH / 2) * SCALE;
+  graphics.moveTo(0, INDOOR_HEIGHT * SCALE);
+  graphics.lineTo(doorLeft, INDOOR_HEIGHT * SCALE);
+  graphics.moveTo(doorRight, INDOOR_HEIGHT * SCALE);
+  graphics.lineTo(CANVAS_WIDTH, INDOOR_HEIGHT * SCALE);
+
+  // Door indicator
+  const doorColor = gateState === 'OPEN' ? COLORS.door : 
+                    gateState === 'THROTTLE' ? 0xeab308 : COLORS.doorClosed;
+  graphics.lineStyle(4, doorColor);
+  graphics.moveTo(doorLeft, INDOOR_HEIGHT * SCALE);
+  graphics.lineTo(doorRight, INDOOR_HEIGHT * SCALE);
+
+  // Zone labels
+  const indoorLabel = new PIXI.Text('INDOOR ZONE (Drone A)', {
+    fontFamily: 'Inter, sans-serif',
+    fontSize: 12,
+    fill: 0x8888aa,
+    fontWeight: 'bold',
+  });
+  indoorLabel.x = 10;
+  indoorLabel.y = 10;
+  container.addChild(indoorLabel);
+
+  const outdoorLabel = new PIXI.Text('OUTDOOR QUEUE (Drone B)', {
+    fontFamily: 'Inter, sans-serif',
+    fontSize: 12,
+    fill: 0x8888aa,
+    fontWeight: 'bold',
+  });
+  outdoorLabel.x = 10;
+  outdoorLabel.y = INDOOR_HEIGHT * SCALE + SCALE + 10;
+  container.addChild(outdoorLabel);
+
+  // Door label
+  const doorLabel = new PIXI.Text('DOOR', {
+    fontFamily: 'Inter, sans-serif',
+    fontSize: 10,
+    fill: 0xaaaacc,
+  });
+  doorLabel.x = DOOR_X * SCALE - 15;
+  doorLabel.y = INDOOR_HEIGHT * SCALE + 2;
+  container.addChild(doorLabel);
+
+  container.addChild(graphics);
+}
+
+function updateDoorColor(stage, gateState) {
+  // Find and update door graphics
+  // This is a simplified version - in production, store reference to door graphics
+}
+
+function drawHeatmap(container, heatmapData, zone) {
+  const graphics = new PIXI.Graphics();
+  const gridSize = heatmapData.length;
+  
+  const zoneWidth = zone === 'indoor' ? INDOOR_WIDTH : OUTDOOR_WIDTH;
+  const zoneHeight = zone === 'indoor' ? INDOOR_HEIGHT : OUTDOOR_HEIGHT;
+  const offsetY = zone === 'indoor' ? 0 : INDOOR_HEIGHT * SCALE + SCALE;
+  
+  const cellWidth = (zoneWidth * SCALE) / gridSize;
+  const cellHeight = (zoneHeight * SCALE) / gridSize;
+
+  // Find max value for normalization
+  let maxVal = 0;
+  for (const row of heatmapData) {
+    for (const val of row) {
+      maxVal = Math.max(maxVal, val);
+    }
+  }
+  if (maxVal === 0) maxVal = 1;
+
+  for (let y = 0; y < gridSize; y++) {
+    for (let x = 0; x < gridSize; x++) {
+      const val = heatmapData[y][x];
+      if (val < 0.1) continue;
+
+      const intensity = Math.min(val / maxVal, 1);
+      const color = getHeatmapColor(intensity);
+      const alpha = intensity * 0.4;
+
+      graphics.beginFill(color, alpha);
+      graphics.drawRect(
+        x * cellWidth,
+        offsetY + (gridSize - 1 - y) * cellHeight,
+        cellWidth,
+        cellHeight
+      );
+      graphics.endFill();
+    }
+  }
+
+  container.addChild(graphics);
+}
+
+function getHeatmapColor(intensity) {
+  if (intensity < 0.33) {
+    return COLORS.heatmapLow;
+  } else if (intensity < 0.66) {
+    return COLORS.heatmapMed;
+  }
+  return COLORS.heatmapHigh;
+}
+
+function drawAgents(container, agents) {
+  if (!agents) return;
+
+  const graphics = new PIXI.Graphics();
+
+  for (const agent of agents) {
+    const [x, y, vx, vy, isSlow, isPanicking] = agent;
+    
+    // Convert sim coordinates to canvas coordinates
+    // Indoor: y >= 0, Outdoor: y < 0
+    const canvasX = x * SCALE;
+    const canvasY = y >= 0 
+      ? (INDOOR_HEIGHT - y) * SCALE  // Indoor (flipped)
+      : (INDOOR_HEIGHT * SCALE + SCALE) + (-y) * SCALE;  // Outdoor
+    
+    // Clamp to visible area
+    if (canvasY < 0 || canvasY > CANVAS_HEIGHT) continue;
+    if (canvasX < 0 || canvasX > CANVAS_WIDTH) continue;
+
+    // Choose color based on agent state
+    let color = COLORS.agent;
+    if (isPanicking) {
+      color = COLORS.agentPanic;
+    } else if (isSlow) {
+      color = COLORS.agentSlow;
+    }
+
+    // Draw agent as circle
+    graphics.beginFill(color);
+    graphics.drawCircle(canvasX, canvasY, isSlow ? 4 : 5);
+    graphics.endFill();
+
+    // Draw velocity direction indicator
+    if (vx !== 0 || vy !== 0) {
+      const speed = Math.sqrt(vx * vx + vy * vy);
+      if (speed > 0.1) {
+        const dirX = (vx / speed) * 6;
+        const dirY = -(vy / speed) * 6; // Flip Y for canvas
+        graphics.lineStyle(1.5, color, 0.6);
+        graphics.moveTo(canvasX, canvasY);
+        graphics.lineTo(canvasX + dirX, canvasY + dirY);
+      }
+    }
+  }
+
+  container.addChild(graphics);
+}

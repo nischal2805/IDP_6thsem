@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #0f0f1a;
+  color: #ffffff;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a2e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3a3a5c;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4a6c;
+}
+
+.status-ring {
+  transition: all 0.3s ease;
+}
+
+.status-GREEN { box-shadow: 0 0 20px rgba(34, 197, 94, 0.5); border-color: #22c55e; }
+.status-YELLOW { box-shadow: 0 0 20px rgba(234, 179, 8, 0.5); border-color: #eab308; }
+.status-ORANGE { box-shadow: 0 0 20px rgba(249, 115, 22, 0.5); border-color: #f97316; }
+.status-RED { box-shadow: 0 0 20px rgba(239, 68, 68, 0.5); border-color: #ef4444; }
+.status-CRITICAL { 
+  animation: critical-pulse 0.5s infinite;
+  border-color: #ef4444;
+}
+.status-EVACUATING { box-shadow: 0 0 20px rgba(59, 130, 246, 0.5); border-color: #3b82f6; }
+.status-STAGED { box-shadow: 0 0 20px rgba(168, 85, 247, 0.5); border-color: #a855f7; }
+.status-CLEAR { box-shadow: 0 0 20px rgba(34, 197, 94, 0.5); border-color: #22c55e; }
+
+@keyframes critical-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 40px rgba(239, 68, 68, 0.8); }
+}
+
+.gate-indicator {
+  transition: all 0.3s ease;
+}
+
+.gate-OPEN { background-color: #22c55e; }
+.gate-THROTTLE { background-color: #eab308; }
+.gate-CLOSED { background-color: #ef4444; }

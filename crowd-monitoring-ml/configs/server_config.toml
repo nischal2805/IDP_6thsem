@@ -1,0 +1,26 @@
+# Ground Server Configuration
+
+[server]
+jetson_port = 9000
+dashboard_port = 8080
+host = "0.0.0.0"
+
+[forecaster]
+model_path = "models/forecaster_model.pt"
+window_size = 30
+horizons = [10, 30, 60]
+capacity = 100
+
+[telegram]
+enabled = true
+status_interval = 300
+
+[alerts]
+fall_priority = "HIGH"
+panic_priority = "CRITICAL"
+crush_priority = "CRITICAL"
+crush_density_threshold = 6.0
+
+[dashboard]
+history_size = 100
+max_alerts = 50
