@@ -1,0 +1,13 @@
+[project]
+name = "dual-drone-simulation-backend"
+version = "0.1.0"
+description = "Backend for Dual Drone Crowd Flow Simulation"
+requires-python = ">=3.10"
+dependencies = [
+    "pysocialforce",
+    "numpy",
+    "scipy",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-socketio",
+]
