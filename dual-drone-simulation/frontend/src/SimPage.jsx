@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useSimSocket } from './useSimSocket';
-import FloorCanvas from './FloorCanvas';
+import DroneCameraView from './DroneCameraView';
 import DronePanel from './DronePanel';
 import OccupancyChart from './OccupancyChart';
 import CrushRiskGauge from './CrushRiskGauge';
@@ -14,6 +14,7 @@ export default function SimPage() {
     historyExport,
     startSimulation,
     stopSimulation,
+    resetSimulation,
     pauseSimulation,
     resumeSimulation,
     injectPanic,
@@ -26,7 +27,9 @@ export default function SimPage() {
   const [isPaused, setIsPaused] = useState(false);
   const [panicMode, setPanicMode] = useState(false);
 
-  const isRunning = simState?.tick > 0 && !isPaused;
+  // Track running state from simState.tick instead of just local state
+  const isRunning = simState && simState.tick > 0;
+  const isSimActive = isRunning && !isPaused;
 
   const handleStart = (scenario, capacity, initialIndoor, initialOutdoor) => {
     setIsPaused(false);
@@ -49,11 +52,11 @@ export default function SimPage() {
   };
 
   const handleCanvasClick = useCallback((x, y) => {
-    if (panicMode && isRunning) {
+    if (panicMode && isSimActive) {
       injectPanic(x, y);
       setPanicMode(false);
     }
-  }, [panicMode, isRunning, injectPanic]);
+  }, [panicMode, isSimActive, injectPanic]);
 
   const handleInjectPanic = () => {
     setPanicMode(true);
@@ -80,48 +83,76 @@ export default function SimPage() {
   return (
     <div className="min-h-screen bg-sim-darker p-4">
       {/* Header */}
-      <header className="mb-6">
+      <header className="mb-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Dual Drone Crowd Simulation</h1>
-            <p className="text-gray-400 text-sm">Real-time crowd flow monitoring with PySocialForce physics</p>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <span className="text-3xl">🛸</span>
+              Dual Drone Surveillance System
+            </h1>
+            <p className="text-gray-400 text-sm">Real-time aerial crowd monitoring • PySocialForce physics engine</p>
           </div>
           <div className="flex items-center gap-4">
-            {/* Connection Status */}
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
-              <span className="text-sm text-gray-400">
-                {connected ? 'Connected' : 'Disconnected'}
-              </span>
-            </div>
             {/* System Status */}
             {simState && (
-              <div className={`px-3 py-1 rounded-full border ${getStatusColor(simState.status)}`}>
-                <span className="font-bold">{simState.status}</span>
+              <div className={`px-4 py-2 rounded-lg border-2 ${getStatusColor(simState.status)} font-mono`}>
+                <span className="font-bold text-sm">{simState.status}</span>
               </div>
             )}
+            {/* Connection Status */}
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 ${
+              connected ? 'bg-emerald-950/50 border-emerald-600' : 'bg-red-950/50 border-red-600'
+            }`}>
+              <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+              <span className="text-sm font-mono font-bold">
+                {connected ? 'CONNECTED' : 'OFFLINE'}
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
       {/* Main Grid */}
       <div className="grid grid-cols-12 gap-4">
-        {/* Left Column - Visualization */}
+        {/* Left Column - Drone Camera Feeds */}
         <div className="col-span-8 space-y-4">
-          {/* Canvas with panic mode indicator */}
-          <div className="relative">
-            {panicMode && (
-              <div className="absolute top-2 left-2 z-10 px-3 py-1 bg-orange-600 text-white text-sm font-bold rounded">
-                Click on canvas to inject panic
+          {/* Panic Mode Indicator */}
+          {panicMode && (
+            <div className="px-4 py-2 bg-orange-600 text-white text-sm font-bold rounded-lg border-2 border-orange-400 animate-pulse">
+              ⚠️ PANIC INJECTION MODE - Click on any camera feed to inject panic at location
+            </div>
+          )}
+
+          {/* Dual Camera Feed Grid */}
+          <div className="grid grid-cols-1 gap-4">
+            {/* Drone A - Indoor Camera */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-3 py-1 bg-blue-900/30 border border-blue-700 rounded">
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                <span className="text-sm font-mono text-blue-300">DRONE A - INDOOR MONITORING</span>
               </div>
-            )}
-            <FloorCanvas 
-              simState={simState} 
-              onCanvasClick={handleCanvasClick}
-            />
+              <DroneCameraView 
+                simState={simState} 
+                onCanvasClick={handleCanvasClick}
+                droneId="A"
+              />
+            </div>
+
+            {/* Drone B - Outdoor Camera */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-3 py-1 bg-emerald-900/30 border border-emerald-700 rounded">
+                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                <span className="text-sm font-mono text-emerald-300">DRONE B - QUEUE MANAGEMENT</span>
+              </div>
+              <DroneCameraView 
+                simState={simState} 
+                onCanvasClick={handleCanvasClick}
+                droneId="B"
+              />
+            </div>
           </div>
 
-          {/* Charts Row */}
+          {/* Analytics Row */}
           <div className="grid grid-cols-2 gap-4">
             <OccupancyChart 
               history={simState?.history} 
@@ -131,17 +162,18 @@ export default function SimPage() {
               crushRisk={simState?.crush_risk_index || 0}
               warning={simState?.crush_warning}
               critical={simState?.crush_critical}
+              scenarioType={simState?.scenario_type}
             />
           </div>
 
           {/* Stats Bar */}
-          <div className="grid grid-cols-5 gap-4">
-            <StatCard label="Tick" value={simState?.tick || 0} />
-            <StatCard label="Indoor" value={simState?.indoor_count || 0} />
-            <StatCard label="Outdoor" value={simState?.outdoor_count || 0} />
+          <div className="grid grid-cols-5 gap-3">
+            <StatCard label="Simulation Tick" value={simState?.tick || 0} />
+            <StatCard label="Indoor Count" value={simState?.indoor_count || 0} />
+            <StatCard label="Queue Size" value={simState?.outdoor_count || 0} />
             <StatCard label="Scenario" value={simState?.scenario || '-'} />
             <StatCard 
-              label="Gate" 
+              label="Gate Status" 
               value={simState?.gate || 'OPEN'} 
               color={
                 simState?.gate === 'OPEN' ? 'text-emerald-400' :
@@ -151,9 +183,9 @@ export default function SimPage() {
           </div>
         </div>
 
-        {/* Right Column - Panels */}
+        {/* Right Column - Control Panels */}
         <div className="col-span-4 space-y-4">
-          {/* Drone Panels */}
+          {/* Drone Status Panels */}
           <DronePanel 
             droneData={simState?.drone_a} 
             status={simState?.status || 'GREEN'}
@@ -169,12 +201,14 @@ export default function SimPage() {
             onStop={handleStop}
             onPause={handlePause}
             onResume={handleResume}
+            onReset={resetSimulation}
             onInjectPanic={handleInjectPanic}
             onStartEvacuation={startEvacuation}
             onCapacityChange={setCapacity}
             onSpawnRateChange={setSpawnRate}
-            isRunning={!!simState?.tick}
+            isRunning={isRunning}
             isPaused={isPaused}
+            simState={simState}
           />
 
           {/* Replay Controls */}
@@ -186,8 +220,8 @@ export default function SimPage() {
       </div>
 
       {/* Footer */}
-      <footer className="mt-6 text-center text-sm text-gray-500">
-        <p>IDP — Crowd Simulation Module | Physics: PySocialForce (Extended Social Force Model)</p>
+      <footer className="mt-4 text-center text-xs text-gray-600 font-mono">
+        <p>IDP PROJECT • AERIAL CROWD SURVEILLANCE • EXTENDED SOCIAL FORCE MODEL (PySocialForce)</p>
       </footer>
     </div>
   );

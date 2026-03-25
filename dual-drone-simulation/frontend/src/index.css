@@ -32,6 +32,40 @@ body {
   background: #4a4a6c;
 }
 
+/* Drone camera effects */
+.drone-camera-border {
+  position: relative;
+  box-shadow: 
+    0 0 30px rgba(34, 197, 94, 0.3),
+    inset 0 0 20px rgba(0, 0, 0, 0.5);
+}
+
+.camera-grid {
+  background-image: 
+    linear-gradient(rgba(34, 197, 94, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 197, 94, 0.05) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+/* Camera scanline effect */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.drone-camera-border::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(transparent, rgba(34, 197, 94, 0.3), transparent);
+  animation: scanline 4s linear infinite;
+  pointer-events: none;
+}
+
 .status-ring {
   transition: all 0.3s ease;
 }

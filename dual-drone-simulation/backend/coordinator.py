@@ -37,7 +37,7 @@ THRESHOLD_ORANGE = 0.95
 THRESHOLD_RED = 1.00
 
 # Crush risk thresholds
-CRUSH_RISK_WARNING = 4.0  # agents per unit area
+CRUSH_RISK_WARNING = 3.0  # agents per unit area
 CRUSH_RISK_CRITICAL = 6.0
 
 # Evacuation thresholds

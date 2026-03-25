@@ -15,6 +15,8 @@ from crowd_sim import CrowdSimulation
 from coordinator import Coordinator
 from panic import PanicManager
 from heatmap import compute_heatmap, compute_crush_risk_index, get_exit_compression
+from zones import MultiZoneManager
+from scenarios import get_scenario, get_all_scenarios
 
 app = FastAPI(title="Dual Drone Crowd Simulation")
 
@@ -31,9 +33,11 @@ app.add_middleware(
 simulation = CrowdSimulation(scenario=1)
 coordinator = Coordinator(capacity=100)
 panic_manager = PanicManager()
+zone_manager = MultiZoneManager(scenario_type="basic")
 connected_clients: Set[WebSocket] = set()
 sim_running = False
 sim_task = None
+current_scenario_id = 1
 
 # History buffer for replay
 history_buffer = []
@@ -56,6 +60,16 @@ async def broadcast_state():
         exit_points = [[10, 0], [0, 10], [20, 10]]  # Main door + emergency exits
         exit_compression = get_exit_compression(indoor_positions, exit_points)
     
+    # Update zone counts if zones active
+    zone_stats = []
+    lane_stats = []
+    scenario_config = get_scenario(current_scenario_id)
+    
+    if scenario_config.get("has_zones"):
+        zone_manager.update_zone_counts(simulation.agents)
+        zone_stats = zone_manager.get_zone_stats()
+        lane_stats = zone_manager.get_lane_stats()
+    
     # Update coordinator
     coord_state = coordinator.update(
         indoor_count=len(indoor_agents),
@@ -77,7 +91,9 @@ async def broadcast_state():
         "capacity": coordinator.capacity,
         "status": coord_state["status"],
         "gate": coord_state["gate"],
-        "scenario": simulation.scenario,
+        "scenario": current_scenario_id,
+        "scenario_config": scenario_config,
+        "scenario_type": scenario_config.get("type", "basic"),
         "crush_risk_index": round(crush_risk, 2),
         "crush_warning": coord_state.get("crush_warning", False),
         "crush_critical": coord_state.get("crush_critical", False),
@@ -88,7 +104,9 @@ async def broadcast_state():
         "history": coordinator.get_history()[-50:],  # Last 50 points for chart
         "drone_a": coordinator.get_drone_a_status(len(indoor_agents), crush_risk),
         "drone_b": coordinator.get_drone_b_status(len(outdoor_agents)),
-        "panic_active": len(panic_manager.get_panic_state()["panicking_agents"]) > 0
+        "panic_active": len(panic_manager.get_panic_state()["panicking_agents"]) > 0,
+        "zones": zone_stats,
+        "lanes": lane_stats
     }
     
     # Record history
@@ -164,13 +182,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
 async def handle_command(message: dict):
     """Handle commands from frontend."""
-    global sim_running, sim_task
+    global sim_running, sim_task, current_scenario_id, zone_manager
     
     cmd = message.get("command")
     
     if cmd == "start":
         if not sim_running:
             scenario = message.get("scenario", 1)
+            current_scenario_id = scenario
             capacity = message.get("capacity", 100)
             initial_indoor = message.get("initial_indoor", 20)
             initial_outdoor = message.get("initial_outdoor", 10)
@@ -179,6 +198,13 @@ async def handle_command(message: dict):
             coordinator.reset(scenario=scenario, capacity=capacity)
             panic_manager.reset()
             history_buffer.clear()
+            
+            # Initialize zones for zone-based scenarios
+            scenario_config = get_scenario(scenario)
+            if scenario_config.get("has_zones"):
+                zone_manager = MultiZoneManager(scenario_type=scenario_config.get("zone_type", "basic"))
+            else:
+                zone_manager = MultiZoneManager(scenario_type="basic")
             
             simulation.spawn_initial_crowd(initial_indoor, initial_outdoor)
             
@@ -193,6 +219,28 @@ async def handle_command(message: dict):
                 await sim_task
             except asyncio.CancelledError:
                 pass
+    
+    elif cmd == "reset":
+        # Reset simulation to initial state
+        sim_running = False
+        if sim_task:
+            sim_task.cancel()
+            try:
+                await sim_task
+            except asyncio.CancelledError:
+                pass
+        
+        simulation.reset(scenario=current_scenario_id)
+        coordinator.reset(scenario=current_scenario_id, capacity=coordinator.capacity)
+        panic_manager.reset()
+        history_buffer.clear()
+        
+        # Reset zones
+        scenario_config = get_scenario(current_scenario_id)
+        if scenario_config.get("has_zones"):
+            zone_manager = MultiZoneManager(scenario_type=scenario_config.get("zone_type", "basic"))
+        else:
+            zone_manager = MultiZoneManager(scenario_type="basic")
     
     elif cmd == "pause":
         sim_running = False
@@ -219,6 +267,17 @@ async def handle_command(message: dict):
     
     elif cmd == "set_spawn_rate":
         simulation.spawn_rate = message.get("rate", 2.0)
+    
+    elif cmd == "get_scenarios":
+        # Return list of all scenarios
+        for client in connected_clients:
+            try:
+                await client.send_text(json.dumps({
+                    "type": "scenarios_list",
+                    "data": get_all_scenarios()
+                }))
+            except:
+                pass
     
     elif cmd == "get_history":
         # Return full history for export

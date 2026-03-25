@@ -74,6 +74,10 @@ export function useSimSocket() {
     sendCommand('stop');
   }, [sendCommand]);
 
+  const resetSimulation = useCallback(() => {
+    sendCommand('reset');
+  }, [sendCommand]);
+
   const pauseSimulation = useCallback(() => {
     sendCommand('pause');
   }, [sendCommand]);
@@ -108,6 +112,7 @@ export function useSimSocket() {
     historyExport,
     startSimulation,
     stopSimulation,
+    resetSimulation,
     pauseSimulation,
     resumeSimulation,
     injectPanic,
