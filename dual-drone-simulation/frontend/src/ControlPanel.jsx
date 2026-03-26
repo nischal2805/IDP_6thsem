@@ -21,17 +21,27 @@ export default function ControlPanel({
   const [spawnRate, setSpawnRate] = useState(2.0);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showVelocity, setShowVelocity] = useState(true);
+  const [scenarios, setScenarios] = useState([]);
 
-  const scenarios = [
-    { id: 1, name: "Entry + Exit", icon: "↔️", desc: "Basic flow" },
-    { id: 2, name: "Entry Only", icon: "➡️", desc: "Capacity test" },
-    { id: 3, name: "Evacuation", icon: "🚨", desc: "Emergency" },
-    { id: 4, name: "Stadium Sections", icon: "🏟️", desc: "Reserved areas" },
-    { id: 5, name: "Multi-Lane", icon: "🚦", desc: "Load balancing" },
-    { id: 6, name: "Tiered (VIP)", icon: "🎫", desc: "Priority lanes" },
-    { id: 7, name: "Bidirectional", icon: "⇄", desc: "Counter-flow" },
-    { id: 8, name: "Predictive", icon: "🔮", desc: "AI control" },
-  ];
+  useEffect(() => {
+    fetch('http://localhost:8000/api/scenarios')
+      .then(response => response.json())
+      .then(data => setScenarios(data.scenarios))
+      .catch(error => {
+        console.error('Failed to fetch scenarios:', error);
+        // Fallback to hardcoded scenarios if backend is unavailable
+        setScenarios([
+          { id: 1, name: "Entry + Exit", icon: "↔️", description: "Basic flow" },
+          { id: 2, name: "Entry Only", icon: "➡️", description: "Capacity test" },
+          { id: 3, name: "Evacuation", icon: "🚨", description: "Emergency" },
+          { id: 4, name: "Stadium Sections", icon: "🏟️", description: "Reserved areas" },
+          { id: 5, name: "Multi-Lane", icon: "🚦", description: "Load balancing" },
+          { id: 6, name: "Tiered (VIP)", icon: "🎫", description: "Priority lanes" },
+          { id: 7, name: "Bidirectional", icon: "⇄", description: "Counter-flow" },
+          { id: 8, name: "Predictive", icon: "🔮", description: "AI control" },
+        ]);
+      });
+  }, []);
 
   const handleStart = () => {
     onStart(scenario, capacity, initialIndoor, initialOutdoor);
@@ -71,7 +81,7 @@ export default function ControlPanel({
                   ? 'bg-blue-600 text-white shadow-lg'
                   : 'bg-sim-darker text-gray-300 hover:bg-sim-border'
               } ${isRunning ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'}`}
-              title={s.desc}
+              title={s.description}
             >
               <div className="flex items-center gap-1">
                 <span>{s.icon}</span>
@@ -81,7 +91,7 @@ export default function ControlPanel({
           ))}
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          {scenarios.find(s => s.id === scenario)?.desc}
+          {scenarios.find(s => s.id === scenario)?.description}
         </p>
       </div>
 

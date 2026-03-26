@@ -307,6 +307,12 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/api/scenarios")
+async def get_scenarios_endpoint():
+    """Return all available scenarios."""
+    return {"scenarios": get_all_scenarios()}
+
+
 if __name__ == "__main__":
     print("Starting Dual Drone Crowd Simulation Server...")
     print("WebSocket endpoint: ws://localhost:8000/ws")

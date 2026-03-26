@@ -6,6 +6,7 @@ import numpy as np
 import random
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
+from scenarios import get_scenario
 
 # Try to import pysocialforce, fall back to mock if not available
 try:
@@ -63,6 +64,7 @@ class CrowdSimulation:
     
     def __init__(self, scenario: int = 1):
         self.scenario = scenario
+        self.scenario_config = get_scenario(scenario)
         self.agents: List[Agent] = []
         self.next_agent_id = 0
         self.groups: List[List[int]] = []
@@ -70,14 +72,19 @@ class CrowdSimulation:
         self.simulator = None
         self.tick = 0
         
-        # Spawn configuration
-        self.spawn_rate = 2.0  # agents per second
+        # Spawn configuration (scenario-dependent)
+        self.spawn_rate = self._get_spawn_rate()
         self.spawn_timer = 0.0
         self.exit_rate = 1.5  # agents per second (Scenario 1)
         
         # Gate state (controlled by coordinator)
         self.gate_open = True
         self.holding_line_y = -3.0  # Agents wait here when gate closed
+        
+        # Bidirectional flow control (Scenario 7)
+        self.bidirectional_mode = "entry"  # "entry" or "exit"
+        self.bidirectional_timer = 0.0
+        self.bidirectional_interval = 10.0  # Switch every 10 seconds
     
     def _create_obstacles(self) -> List[List[List[float]]]:
         """Create wall obstacles with door openings."""
@@ -110,17 +117,38 @@ class CrowdSimulation:
         
         return obstacles
     
+    def _get_spawn_rate(self) -> float:
+        """Get scenario-specific spawn rate."""
+        scenario_type = self.scenario_config.get("type")
+        
+        if scenario_type == "evacuation":
+            return 0.0  # No new spawns during evacuation
+        elif scenario_type == "multi_lane":
+            return 4.0  # Higher rate for multi-lane
+        elif scenario_type == "tiered":
+            return 2.5  # Moderate for tiered admission
+        elif self.scenario == 2:  # Entry Only
+            return 3.0  # Higher rate to show capacity filling
+        elif scenario_type == "bidirectional":
+            return 1.5  # Lower rate for bidirectional flow
+        else:
+            return 2.0  # Default rate
+    
     def reset(self, scenario: int = 1):
         """Reset simulation state."""
         self.scenario = scenario
+        self.scenario_config = get_scenario(scenario)
         self.agents.clear()
         self.groups.clear()
         self.next_agent_id = 0
         self.tick = 0
         self.spawn_timer = 0.0
+        self.spawn_rate = self._get_spawn_rate()
         self.obstacles = self._create_obstacles()
         self.simulator = None
         self.gate_open = True
+        self.bidirectional_mode = "entry"
+        self.bidirectional_timer = 0.0
     
     def spawn_agent(self, x: float, y: float, goal_x: float, goal_y: float, 
                     is_slow: bool = False, group_id: Optional[int] = None) -> Agent:
@@ -141,34 +169,57 @@ class CrowdSimulation:
     
     def spawn_outdoor_agent(self) -> Optional[Agent]:
         """Spawn an agent in the outdoor queue area."""
+        scenario_type = self.scenario_config.get("type")
+        
+        # Scenario 7: Bidirectional - only spawn in entry mode
+        if scenario_type == "bidirectional" and self.bidirectional_mode != "entry":
+            return None
+        
         # Random position in outdoor zone
-        x = random.uniform(DOOR_X - 5, DOOR_X + 5)
-        y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
+        if scenario_type == "multi_lane":
+            # Spawn in one of 4 lanes
+            lane = random.randint(0, 3)
+            x = DOOR_X - 6 + lane * 4
+            y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
+        else:
+            x = random.uniform(DOOR_X - 5, DOOR_X + 5)
+            y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
         
         # Goal is the door
         goal_x = DOOR_X
         goal_y = 1.0  # Just inside the door
         
-        # 10% chance of being slow
-        is_slow = random.random() < SLOW_AGENT_RATIO
+        # 10% chance of being slow (except for tiered scenario)
+        if scenario_type == "tiered":
+            # 20% VIP, 60% General, 20% Student
+            tier = random.choices(["vip", "general", "student"], weights=[0.2, 0.6, 0.2])[0]
+            is_slow = tier == "student"
+        else:
+            is_slow = random.random() < SLOW_AGENT_RATIO
         
         return self.spawn_agent(x, y, goal_x, goal_y, is_slow)
     
     def spawn_initial_crowd(self, indoor_count: int = 20, outdoor_count: int = 10):
         """Spawn initial crowd for simulation start."""
+        scenario_type = self.scenario_config.get("type")
+        
+        # Adjust initial counts based on scenario
+        if scenario_type == "evacuation":
+            indoor_count = 50  # More people for evacuation
+            outdoor_count = 0
+        elif self.scenario == 2:  # Entry Only
+            indoor_count = 10  # Start with fewer, will fill up
+            outdoor_count = 15
+        elif scenario_type == "bidirectional":
+            indoor_count = 30  # More indoor agents to exit
+            outdoor_count = 10
+        
         # Indoor agents
         for _ in range(indoor_count):
             x = random.uniform(2, INDOOR_WIDTH - 2)
             y = random.uniform(2, INDOOR_HEIGHT - 2)
             
-            if self.scenario == 1:
-                # Goal is exit
-                goal_x = EXIT_X
-                goal_y = INDOOR_HEIGHT + 1
-            else:
-                # Random wandering goal
-                goal_x = random.uniform(2, INDOOR_WIDTH - 2)
-                goal_y = random.uniform(2, INDOOR_HEIGHT - 2)
+            goal_x, goal_y = self._get_initial_indoor_goal(scenario_type)
             
             is_slow = random.random() < SLOW_AGENT_RATIO
             agent = self.spawn_agent(x, y, goal_x, goal_y, is_slow)
@@ -177,6 +228,21 @@ class CrowdSimulation:
         # Outdoor agents
         for _ in range(outdoor_count):
             self.spawn_outdoor_agent()
+    
+    def _get_initial_indoor_goal(self, scenario_type: str) -> Tuple[float, float]:
+        """Get initial goal for indoor agents based on scenario."""
+        if scenario_type == "basic" and self.scenario_config.get("has_exit"):
+            # Scenario 1: Exit through top
+            return EXIT_X, INDOOR_HEIGHT + 1
+        elif scenario_type == "evacuation":
+            # Will be set by start_evacuation()
+            return EXIT_X, INDOOR_HEIGHT + 1
+        elif scenario_type == "bidirectional":
+            # Exit through door (bottom)
+            return DOOR_X, -1
+        else:
+            # Random wandering
+            return random.uniform(3, INDOOR_WIDTH - 3), random.uniform(3, INDOOR_HEIGHT - 3)
     
     def _build_state_array(self) -> np.ndarray:
         """Build numpy state array for PySocialForce."""
@@ -220,13 +286,28 @@ class CrowdSimulation:
         """
         self.tick += 1
         self.gate_open = gate_open
+        scenario_type = self.scenario_config.get("type")
         
-        # Spawn new outdoor agents
-        self.spawn_timer += dt
-        if self.spawn_timer >= 1.0 / self.spawn_rate:
-            self.spawn_timer = 0.0
-            if len([a for a in self.agents if not a.is_indoor]) < 50:  # Cap outdoor
-                self.spawn_outdoor_agent()
+        # Bidirectional flow control (Scenario 7)
+        if scenario_type == "bidirectional":
+            self.bidirectional_timer += dt
+            if self.bidirectional_timer >= self.bidirectional_interval:
+                self.bidirectional_timer = 0.0
+                # Switch modes
+                if self.bidirectional_mode == "entry":
+                    self.bidirectional_mode = "exit"
+                    self._switch_to_exit_mode()
+                else:
+                    self.bidirectional_mode = "entry"
+                    self._switch_to_entry_mode()
+        
+        # Spawn new outdoor agents (scenario-dependent)
+        if self.spawn_rate > 0:
+            self.spawn_timer += dt
+            if self.spawn_timer >= 1.0 / self.spawn_rate:
+                self.spawn_timer = 0.0
+                if len([a for a in self.agents if not a.is_indoor]) < 50:  # Cap outdoor
+                    self.spawn_outdoor_agent()
         
         if not self.agents:
             return
@@ -263,9 +344,14 @@ class CrowdSimulation:
         # Handle transitions through door
         self._handle_door_transitions()
         
-        # Handle exits (Scenario 1)
-        if self.scenario == 1:
-            self._handle_exits()
+        # Scenario-specific exit handling
+        if self.scenario_config.get("has_exit"):
+            if scenario_type == "basic":
+                self._handle_exits()  # Top exit (Scenario 1)
+            elif scenario_type == "bidirectional":
+                self._handle_bidirectional_exits()  # Door exit (Scenario 7)
+            elif scenario_type == "evacuation":
+                self._handle_evacuation_exits()  # Emergency exits (Scenario 3)
         
         # Update goals for wandering agents (Scenario 2)
         if self.scenario == 2:
@@ -315,6 +401,7 @@ class CrowdSimulation:
         """Handle agents moving through the door."""
         door_left = DOOR_X - DOOR_WIDTH / 2
         door_right = DOOR_X + DOOR_WIDTH / 2
+        scenario_type = self.scenario_config.get("type")
         
         for agent in self.agents:
             # Check if near door
@@ -325,10 +412,19 @@ class CrowdSimulation:
                     agent.y = max(agent.y, 1.0)
                     
                     # Set new goal based on scenario
-                    if self.scenario == 1:
+                    if self.scenario == 1:  # Entry + Exit
                         agent.goal_x = EXIT_X
                         agent.goal_y = INDOOR_HEIGHT + 1
+                    elif scenario_type == "evacuation":
+                        # Will panic and exit
+                        agent.is_panicking = True
+                        self._assign_evacuation_exit(agent)
+                    elif scenario_type == "bidirectional":
+                        # Wander briefly, then exit
+                        agent.goal_x = random.uniform(5, INDOOR_WIDTH - 5)
+                        agent.goal_y = random.uniform(5, INDOOR_HEIGHT - 5)
                     else:
+                        # Random wandering
                         agent.goal_x = random.uniform(3, INDOOR_WIDTH - 3)
                         agent.goal_y = random.uniform(3, INDOOR_HEIGHT - 3)
     
@@ -357,30 +453,89 @@ class CrowdSimulation:
                     agent.goal_x = random.uniform(3, INDOOR_WIDTH - 3)
                     agent.goal_y = random.uniform(3, INDOOR_HEIGHT - 3)
     
+    def _handle_bidirectional_exits(self):
+        """Handle agents exiting through door in bidirectional mode (Scenario 7)."""
+        door_left = DOOR_X - DOOR_WIDTH / 2
+        door_right = DOOR_X + DOOR_WIDTH / 2
+        
+        to_remove = []
+        for agent in self.agents:
+            if agent.is_indoor and agent.y <= 0.5:
+                if door_left <= agent.x <= door_right:
+                    to_remove.append(agent)
+        
+        for agent in to_remove:
+            self.agents.remove(agent)
+    
+    def _handle_evacuation_exits(self):
+        """Handle agents exiting during evacuation (Scenario 3)."""
+        to_remove = []
+        
+        for agent in self.agents:
+            # Main door exit
+            door_left = DOOR_X - DOOR_WIDTH / 2
+            door_right = DOOR_X + DOOR_WIDTH / 2
+            if agent.y <= 0.5 and door_left <= agent.x <= door_right:
+                to_remove.append(agent)
+            
+            # Left emergency exit
+            elif agent.x <= 0.5 and abs(agent.y - INDOOR_HEIGHT / 2) <= 1.0:
+                to_remove.append(agent)
+            
+            # Right emergency exit
+            elif agent.x >= INDOOR_WIDTH - 0.5 and abs(agent.y - INDOOR_HEIGHT / 2) <= 1.0:
+                to_remove.append(agent)
+        
+        for agent in to_remove:
+            self.agents.remove(agent)
+    
+    def _assign_evacuation_exit(self, agent: Agent):
+        """Assign nearest emergency exit to agent."""
+        dist_main = agent.y  # Distance to main door (y=0)
+        dist_left = np.sqrt(agent.x**2 + (agent.y - INDOOR_HEIGHT/2)**2)
+        dist_right = np.sqrt((agent.x - INDOOR_WIDTH)**2 + (agent.y - INDOOR_HEIGHT/2)**2)
+        
+        min_dist = min(dist_main, dist_left, dist_right)
+        
+        if min_dist == dist_main:
+            agent.goal_x = DOOR_X
+            agent.goal_y = -1
+        elif min_dist == dist_left:
+            agent.goal_x = -1
+            agent.goal_y = INDOOR_HEIGHT / 2
+        else:
+            agent.goal_x = INDOOR_WIDTH + 1
+            agent.goal_y = INDOOR_HEIGHT / 2
+    
+    def _switch_to_exit_mode(self):
+        """Switch bidirectional flow to exit mode."""
+        # Set indoor agents to exit through door
+        for agent in self.agents:
+            if agent.is_indoor:
+                agent.goal_x = DOOR_X
+                agent.goal_y = -1
+    
+    def _switch_to_entry_mode(self):
+        """Switch bidirectional flow to entry mode."""
+        # Outdoor agents will continue entering
+        # Indoor agents wander
+        for agent in self.agents:
+            if agent.is_indoor:
+                agent.goal_x = random.uniform(5, INDOOR_WIDTH - 5)
+                agent.goal_y = random.uniform(5, INDOOR_HEIGHT - 5)
+    
     def start_evacuation(self):
         """Start evacuation mode (Scenario 3)."""
         self.scenario = 3
+        self.scenario_config = get_scenario(3)
         self.gate_open = False
+        self.spawn_rate = 0.0  # No new spawns during evacuation
         
-        # Set all indoor agents to exit goals
+        # Set all indoor agents to panic and exit
         for agent in self.agents:
             if agent.is_indoor:
-                # Assign to nearest exit
-                dist_main = agent.y  # Distance to main door (y=0)
-                dist_left = np.sqrt(agent.x**2 + (agent.y - INDOOR_HEIGHT/2)**2)
-                dist_right = np.sqrt((agent.x - INDOOR_WIDTH)**2 + (agent.y - INDOOR_HEIGHT/2)**2)
-                
-                min_dist = min(dist_main, dist_left, dist_right)
-                
-                if min_dist == dist_main:
-                    agent.goal_x = DOOR_X
-                    agent.goal_y = -1
-                elif min_dist == dist_left:
-                    agent.goal_x = -1
-                    agent.goal_y = INDOOR_HEIGHT / 2
-                else:
-                    agent.goal_x = INDOOR_WIDTH + 1
-                    agent.goal_y = INDOOR_HEIGHT / 2
+                agent.is_panicking = True
+                self._assign_evacuation_exit(agent)
     
     def get_indoor_agents(self) -> List[Agent]:
         """Get list of indoor agents."""
