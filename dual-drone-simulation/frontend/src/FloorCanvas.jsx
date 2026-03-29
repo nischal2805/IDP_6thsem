@@ -35,6 +35,7 @@ export default function FloorCanvas({ simState, onCanvasClick }) {
   const appRef = useRef(null);
   const agentContainerRef = useRef(null);
   const heatmapContainerRef = useRef(null);
+  const staticContainerRef = useRef(null);
 
   // Initialize PIXI
   useEffect(() => {
@@ -63,9 +64,7 @@ export default function FloorCanvas({ simState, onCanvasClick }) {
     
     heatmapContainerRef.current = heatmapContainer;
     agentContainerRef.current = agentContainer;
-
-    // Draw static elements
-    drawStaticElements(staticContainer, simState?.gate || 'OPEN');
+    staticContainerRef.current = staticContainer;
 
     // Handle click for panic injection
     app.stage.interactive = true;
@@ -84,6 +83,21 @@ export default function FloorCanvas({ simState, onCanvasClick }) {
       appRef.current = null;
     };
   }, []);
+
+  // Redraw static elements when scenario changes
+  useEffect(() => {
+    if (!appRef.current || !staticContainerRef.current) return;
+    
+    const staticContainer = staticContainerRef.current;
+    staticContainer.removeChildren();
+    
+    const scenarioType = simState?.scenario_type || 'basic';
+    const gateState = simState?.gate || 'OPEN';
+    const zones = simState?.zones || null;
+    const lanes = simState?.lanes || null;
+    
+    drawStaticElements(staticContainer, gateState, scenarioType, zones, lanes);
+  }, [simState?.scenario_type, simState?.gate]);
 
   // Update on state change
   useEffect(() => {
@@ -121,7 +135,7 @@ export default function FloorCanvas({ simState, onCanvasClick }) {
   );
 }
 
-function drawStaticElements(container, gateState) {
+function drawStaticElements(container, gateState, scenarioType, zones, lanes) {
   const graphics = new PIXI.Graphics();
   
   // Indoor area background
@@ -165,7 +179,154 @@ function drawStaticElements(container, gateState) {
   graphics.moveTo(doorLeft, INDOOR_HEIGHT * SCALE);
   graphics.lineTo(doorRight, INDOOR_HEIGHT * SCALE);
 
-  // Zone labels
+  // Draw scenario-specific elements
+  drawScenarioSpecificElements(graphics, scenarioType, zones, lanes);
+
+  container.addChild(graphics);
+
+  // Zone labels (scenario-aware)
+  drawScenarioLabels(container, scenarioType);
+}
+
+function drawScenarioSpecificElements(graphics, scenarioType, zones, lanes) {
+  graphics.lineStyle(2, 0x6366f1, 0.6); // Indigo dividers
+  
+  switch (scenarioType) {
+    case 'stadium':
+      // 4 stadium sections with cross dividers
+      graphics.moveTo(CANVAS_WIDTH / 2, 0);
+      graphics.lineTo(CANVAS_WIDTH / 2, INDOOR_HEIGHT * SCALE);
+      graphics.moveTo(0, INDOOR_HEIGHT * SCALE / 2);
+      graphics.lineTo(CANVAS_WIDTH, INDOOR_HEIGHT * SCALE / 2);
+      
+      // Add section labels
+      const sectionLabels = ['Section A', 'Section B', 'Section C', 'Section D'];
+      const positions = [
+        [CANVAS_WIDTH / 4, INDOOR_HEIGHT * SCALE / 4],
+        [3 * CANVAS_WIDTH / 4, INDOOR_HEIGHT * SCALE / 4],
+        [CANVAS_WIDTH / 4, 3 * INDOOR_HEIGHT * SCALE / 4],
+        [3 * CANVAS_WIDTH / 4, 3 * INDOOR_HEIGHT * SCALE / 4],
+      ];
+      
+      sectionLabels.forEach((label, i) => {
+        const text = new PIXI.Text(label, {
+          fontFamily: 'Inter, sans-serif',
+          fontSize: 10,
+          fill: 0x6366f1,
+          fontWeight: 'bold',
+        });
+        text.anchor.set(0.5);
+        text.x = positions[i][0];
+        text.y = positions[i][1];
+        graphics.parent?.addChild(text);
+      });
+      break;
+
+    case 'multi_lane':
+      // 4 vertical lanes
+      for (let i = 1; i < 4; i++) {
+        const x = (CANVAS_WIDTH / 4) * i;
+        graphics.moveTo(x, 0);
+        graphics.lineTo(x, INDOOR_HEIGHT * SCALE);
+      }
+      
+      // Lane labels
+      for (let i = 0; i < 4; i++) {
+        const text = new PIXI.Text(`Lane ${i + 1}`, {
+          fontFamily: 'Inter, sans-serif',
+          fontSize: 9,
+          fill: 0x6366f1,
+          fontWeight: 'bold',
+        });
+        text.x = (CANVAS_WIDTH / 4) * i + CANVAS_WIDTH / 8 - 20;
+        text.y = 5;
+        graphics.parent?.addChild(text);
+      }
+      break;
+
+    case 'tiered':
+      // 3 horizontal tiers (VIP, General, Student)
+      graphics.moveTo(0, INDOOR_HEIGHT * SCALE / 3);
+      graphics.lineTo(CANVAS_WIDTH, INDOOR_HEIGHT * SCALE / 3);
+      graphics.moveTo(0, 2 * INDOOR_HEIGHT * SCALE / 3);
+      graphics.lineTo(CANVAS_WIDTH, 2 * INDOOR_HEIGHT * SCALE / 3);
+      
+      // Tier labels
+      const tierLabels = ['VIP', 'GENERAL', 'STUDENT'];
+      tierLabels.forEach((label, i) => {
+        const text = new PIXI.Text(label, {
+          fontFamily: 'Inter, sans-serif',
+          fontSize: 10,
+          fill: 0x6366f1,
+          fontWeight: 'bold',
+        });
+        text.x = 10;
+        text.y = (INDOOR_HEIGHT * SCALE / 3) * i + INDOOR_HEIGHT * SCALE / 6 - 5;
+        graphics.parent?.addChild(text);
+      });
+      break;
+
+    case 'bidirectional':
+      // Center divider for two-way flow
+      graphics.lineStyle(3, 0xf59e0b, 0.8); // Orange for bidirectional
+      graphics.moveTo(CANVAS_WIDTH / 2, 0);
+      graphics.lineTo(CANVAS_WIDTH / 2, INDOOR_HEIGHT * SCALE);
+      
+      // Direction arrows
+      const arrow1 = new PIXI.Text('→', {
+        fontFamily: 'Arial',
+        fontSize: 24,
+        fill: 0xf59e0b,
+      });
+      arrow1.x = CANVAS_WIDTH / 4 - 12;
+      arrow1.y = INDOOR_HEIGHT * SCALE / 2 - 12;
+      graphics.parent?.addChild(arrow1);
+      
+      const arrow2 = new PIXI.Text('←', {
+        fontFamily: 'Arial',
+        fontSize: 24,
+        fill: 0xf59e0b,
+      });
+      arrow2.x = 3 * CANVAS_WIDTH / 4 - 12;
+      arrow2.y = INDOOR_HEIGHT * SCALE / 2 - 12;
+      graphics.parent?.addChild(arrow2);
+      break;
+
+    case 'evacuation':
+      // Emergency exit markers
+      graphics.lineStyle(3, 0xef4444);
+      graphics.beginFill(0xef4444, 0.3);
+      
+      // Top exit (wider)
+      graphics.drawRect(CANVAS_WIDTH / 2 - 30, 0, 60, 10);
+      
+      const exitText = new PIXI.Text('🚨 EMERGENCY EXIT', {
+        fontFamily: 'Inter, sans-serif',
+        fontSize: 11,
+        fill: 0xef4444,
+        fontWeight: 'bold',
+      });
+      exitText.x = CANVAS_WIDTH / 2 - 60;
+      exitText.y = 15;
+      graphics.parent?.addChild(exitText);
+      break;
+
+    case 'predictive':
+      // AI control zone indicator
+      const aiText = new PIXI.Text('🔮 AI PREDICTIVE CONTROL', {
+        fontFamily: 'Inter, sans-serif',
+        fontSize: 11,
+        fill: 0x8b5cf6,
+        fontWeight: 'bold',
+      });
+      aiText.x = CANVAS_WIDTH / 2 - 85;
+      aiText.y = INDOOR_HEIGHT * SCALE - 25;
+      graphics.parent?.addChild(aiText);
+      break;
+  }
+}
+
+function drawScenarioLabels(container, scenarioType) {
   const indoorLabel = new PIXI.Text('INDOOR ZONE (Drone A)', {
     fontFamily: 'Inter, sans-serif',
     fontSize: 12,
@@ -173,7 +334,7 @@ function drawStaticElements(container, gateState) {
     fontWeight: 'bold',
   });
   indoorLabel.x = 10;
-  indoorLabel.y = 10;
+  indoorLabel.y = scenarioType === 'basic' || scenarioType === 'evacuation' ? 10 : INDOOR_HEIGHT * SCALE - 20;
   container.addChild(indoorLabel);
 
   const outdoorLabel = new PIXI.Text('OUTDOOR QUEUE (Drone B)', {
@@ -195,8 +356,6 @@ function drawStaticElements(container, gateState) {
   doorLabel.x = DOOR_X * SCALE - 15;
   doorLabel.y = INDOOR_HEIGHT * SCALE + 2;
   container.addChild(doorLabel);
-
-  container.addChild(graphics);
 }
 
 function updateDoorColor(stage, gateState) {

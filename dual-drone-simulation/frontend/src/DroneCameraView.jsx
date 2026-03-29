@@ -39,6 +39,7 @@ export default function DroneCameraView({ simState, onCanvasClick, droneId }) {
   const agentContainerRef = useRef(null);
   const heatmapContainerRef = useRef(null);
   const hudContainerRef = useRef(null);
+  const staticContainerRef = useRef(null);
 
   const isDroneA = droneId === 'A';
   const zone = isDroneA ? 'indoor' : 'outdoor';
@@ -74,10 +75,7 @@ export default function DroneCameraView({ simState, onCanvasClick, droneId }) {
     heatmapContainerRef.current = heatmapContainer;
     agentContainerRef.current = agentContainer;
     hudContainerRef.current = hudContainer;
-
-    // Draw static elements
-    const scenarioType = simState?.scenario_type || 'basic';
-    drawStaticElements(staticContainer, zone, simState?.gate || 'OPEN', scenarioType);
+    staticContainerRef.current = staticContainer;
     
     // Draw HUD overlay
     drawDroneHUD(hudContainer, droneId, CANVAS_WIDTH, canvasHeight);
@@ -101,6 +99,19 @@ export default function DroneCameraView({ simState, onCanvasClick, droneId }) {
       appRef.current = null;
     };
   }, [droneId]);
+
+  // Redraw static elements when scenario changes
+  useEffect(() => {
+    if (!appRef.current || !staticContainerRef.current) return;
+    
+    const staticContainer = staticContainerRef.current;
+    staticContainer.removeChildren();
+    
+    const scenarioType = simState?.scenario_type || 'basic';
+    const gateState = simState?.gate || 'OPEN';
+    
+    drawStaticElements(staticContainer, zone, gateState, scenarioType);
+  }, [simState?.scenario_type, simState?.gate, zone]);
 
   // Update on state change
   useEffect(() => {
