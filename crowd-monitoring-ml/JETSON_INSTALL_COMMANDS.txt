@@ -1,0 +1,54 @@
+# ====================================
+# JETSON MANUAL SETUP WITH UV
+# Run these on Jetson (jatayu@10.58.30.240)
+# ====================================
+
+# 1. Create project directory and clone repo
+mkdir -p ~/crowd-monitoring
+cd ~/crowd-monitoring
+
+# Clone your repo (replace with your actual git URL)
+# git clone <your-repo-url> .
+# OR transfer files manually via scp
+
+# 2. Create virtual environment with uv
+uv venv .venv
+source .venv/bin/activate
+
+# 3. Install system dependencies (if needed)
+sudo apt-get update
+sudo apt-get install -y libopenblas-base libopenmpi-dev libomp-dev
+
+# 4. Install numpy first (required for PyTorch)
+uv pip install numpy==1.26.0
+
+# 5. Install PyTorch for Jetson (try standard first)
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# If above fails, use NVIDIA wheel for JetPack 6.0:
+# wget https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.1.0a0+41361538.nv23.06-cp310-cp310-linux_aarch64.whl
+# uv pip install torch-2.1.0a0+41361538.nv23.06-cp310-cp310-linux_aarch64.whl
+# rm torch-2.1.0a0+41361538.nv23.06-cp310-cp310-linux_aarch64.whl
+
+# 6. Install Ultralytics YOLO
+uv pip install ultralytics
+
+# 7. Install OpenCV and other dependencies
+uv pip install opencv-python pymavlink scipy pyyaml websocket-client
+
+# 8. Verify installation
+python3 -c \"import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')\"
+python3 -c \"import cv2; print(f'OpenCV: {cv2.__version__}')\"
+python3 -c \"from ultralytics import YOLO; print('YOLO: OK')\"
+
+# 9. Test camera
+python3 -c \"import cv2; cap = cv2.VideoCapture(0); print('Camera:', cap.isOpened()); cap.release()\"
+
+# ====================================
+# ACTIVATION FOR FUTURE SESSIONS
+# ====================================
+# Always run this before using the project:
+source ~/crowd-monitoring/.venv/bin/activate
+
+# Add to ~/.bashrc for auto-activation (optional):
+# echo 'source ~/crowd-monitoring/.venv/bin/activate' >> ~/.bashrc
