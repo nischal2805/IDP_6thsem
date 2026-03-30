@@ -24,7 +24,7 @@ stillness_duration = 1.5
 window_size = 20
 
 [density_estimation]
-backend = "auto"
+backend = "mock"
 input_width = 640
 input_height = 480
 
