@@ -52,7 +52,7 @@ class JetsonInferencePipeline:
         server_host: str = "localhost",
         server_port: int = 9000,
         target_fps: float = 15.0,
-        use_tensorrt: bool = True,
+        use_tensorrt: bool = False,
         enable_display: bool = True
     ):
         """
@@ -122,18 +122,37 @@ class JetsonInferencePipeline:
         
         # Initialize camera
         if CV2_AVAILABLE:
+            print(f"Opening camera {self.camera_source}...")
             self.cap = cv2.VideoCapture(self.camera_source)
+            
+            # Give camera time to initialize
+            time.sleep(1)
+            
             if not self.cap.isOpened():
-                print(f"Failed to open camera {self.camera_source}")
+                print(f"❌ Failed to open camera {self.camera_source}")
+                print("Available devices:")
+                import os
+                os.system("ls -l /dev/video* 2>/dev/null || echo 'No video devices found'")
                 return False
             
             # Set camera properties
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer for lower latency
+            
+            # Test read
+            ret, test_frame = self.cap.read()
+            if not ret:
+                print("❌ Camera opened but cannot read frames")
+                return False
+            print(f"✅ Camera initialized: {test_frame.shape[1]}x{test_frame.shape[0]}")
         
         # Connect GPS
-        self.gps_manager.connect()
+        try:
+            self.gps_manager.connect()
+        except Exception as e:
+            print(f"GPS connection failed (non-critical): {e}")
         
         # Connect to ground server
         self._connect_server()
@@ -165,16 +184,19 @@ class JetsonInferencePipeline:
     
     def _connect_server(self):
         """Connect to ground server via socket."""
-        if not SOCKET_AVAILABLE:
+        if not SOCKET_AVAILABLE or self.server_host is None:
+            print("Running in local-only mode (no server connection)")
             return
         
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5)  # 5 second timeout
             self.socket.connect((self.server_host, self.server_port))
             self.connected = True
-            print(f"Connected to ground server at {self.server_host}:{self.server_port}")
+            print(f"✅ Connected to ground server at {self.server_host}:{self.server_port}")
         except Exception as e:
-            print(f"Failed to connect to server: {e}")
+            print(f"⚠️ Failed to connect to server: {e}")
+            print("   Continuing in local-only mode...")
             self.connected = False
     
     def _send_result(self, result: Dict):
@@ -192,6 +214,9 @@ class JetsonInferencePipeline:
     
     def _run_loop(self):
         """Main inference loop."""
+        consecutive_failures = 0
+        max_failures = 10
+        
         while self.running:
             loop_start = time.time()
             
@@ -199,19 +224,35 @@ class JetsonInferencePipeline:
             if CV2_AVAILABLE and self.cap:
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("Frame capture failed")
-                    time.sleep(0.1)
+                    consecutive_failures += 1
+                    print(f"⚠️ Frame capture failed (attempt {consecutive_failures}/{max_failures})")
+                    
+                    if consecutive_failures >= max_failures:
+                        print("❌ Too many consecutive failures, stopping...")
+                        self.running = False
+                        break
+                    
+                    time.sleep(0.5)
                     continue
+                else:
+                    consecutive_failures = 0  # Reset on success
             else:
                 # Generate test frame
                 frame = np.random.randint(0, 255, (720, 1280, 3), dtype=np.uint8)
             
             # Process frame
-            result = self._process_frame(frame)
-            self.latest_result = result
+            try:
+                result = self._process_frame(frame)
+                self.latest_result = result
+            except Exception as e:
+                print(f"❌ Frame processing error: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
             
             # Send to server
-            self._send_result(result)
+            if self.connected:
+                self._send_result(result)
             
             # Display
             if self.enable_display and CV2_AVAILABLE:
@@ -230,6 +271,12 @@ class JetsonInferencePipeline:
                 time.sleep(self.frame_interval - elapsed)
             
             self.frame_count += 1
+            
+            # Print FPS every 30 frames
+            if self.frame_count % 30 == 0:
+                runtime = time.time() - self.start_time
+                fps = self.frame_count / runtime if runtime > 0 else 0
+                print(f"📊 FPS: {fps:.1f} | Frames: {self.frame_count} | Connected: {self.connected}")
     
     def _process_frame(self, frame: np.ndarray) -> Dict:
         """
@@ -409,12 +456,14 @@ def main():
     parser.add_argument("--fps", type=float, default=15.0, help="Target FPS")
     parser.add_argument("--no-display", action="store_true", help="Disable local display")
     parser.add_argument("--no-tensorrt", action="store_true", help="Disable TensorRT")
+    parser.add_argument("--no-gps", action="store_true", help="Disable GPS")
+    parser.add_argument("--no-server", action="store_true", help="Run without server connection (local only)")
     
     args = parser.parse_args()
     
     pipeline = JetsonInferencePipeline(
         camera_source=args.camera,
-        server_host=args.server,
+        server_host=args.server if not args.no_server else None,
         server_port=args.port,
         target_fps=args.fps,
         use_tensorrt=not args.no_tensorrt,

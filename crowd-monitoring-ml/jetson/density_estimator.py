@@ -199,7 +199,7 @@ class CrowdDensityEstimator:
         self,
         backend: str = "auto",  # "mobilecount", "lwcc", "auto", "mock"
         model_path: Optional[str] = None,
-        device: str = "cuda",
+        device: str = "cpu",
         input_size: Tuple[int, int] = (640, 480)
     ):
         """
@@ -220,11 +220,16 @@ class CrowdDensityEstimator:
             self.model = None  # LWCC handles model internally
             self.lwcc_model = "DM-Count"  # Options: CSRNet, SFANet, DM-Count
         elif self.backend == "mobilecount":
-            self.model = MobileCount()
-            if model_path:
-                self._load_weights(model_path)
-            self.model.to(device)
-            self.model.eval()
+            try:
+                self.model = MobileCount()
+                if model_path:
+                    self._load_weights(model_path)
+                self.model.to(device)
+                self.model.eval()
+            except Exception as e:
+                print(f"MobileCount initialization failed: {e}, using mock backend")
+                self.backend = "mock"
+                self.model = None
         else:
             self.model = None
         

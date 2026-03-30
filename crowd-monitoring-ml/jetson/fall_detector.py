@@ -401,18 +401,22 @@ class MLFallDetector:
         self,
         model_path: Optional[str] = None,
         use_lstm: bool = True,
-        device: str = "cuda"
+        device: str = "cpu"
     ):
         self.rule_detector = RuleBasedFallDetector()
         self.use_lstm = use_lstm and TORCH_AVAILABLE
         self.device = device
         
         if self.use_lstm:
-            self.lstm_classifier = LSTMFallClassifier()
-            if model_path:
-                self._load_model(model_path)
-            self.lstm_classifier.to(device)
-            self.lstm_classifier.eval()
+            try:
+                self.lstm_classifier = LSTMFallClassifier()
+                if model_path:
+                    self._load_model(model_path)
+                self.lstm_classifier.to(device)
+                self.lstm_classifier.eval()
+            except Exception as e:
+                print(f"LSTM initialization failed: {e}, using rule-based only")
+                self.use_lstm = False
     
     def _load_model(self, model_path: str):
         """Load pretrained LSTM weights."""

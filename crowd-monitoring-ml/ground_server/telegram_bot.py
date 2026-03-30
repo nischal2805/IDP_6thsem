@@ -14,6 +14,9 @@ try:
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
+    # Create dummy types for when Telegram is not installed
+    Update = type('Update', (), {})
+    ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': None})
     print("Warning: python-telegram-bot not installed")
 
 

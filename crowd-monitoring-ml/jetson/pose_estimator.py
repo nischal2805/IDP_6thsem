@@ -82,9 +82,9 @@ class PoseEstimator:
     def __init__(
         self,
         model_path: str = "yolov8n-pose.pt",
-        device: str = "cuda",
+        device: str = "cpu",
         conf_threshold: float = 0.5,
-        use_tensorrt: bool = True
+        use_tensorrt: bool = False
     ):
         """
         Initialize the pose estimator.
@@ -117,10 +117,14 @@ class PoseEstimator:
             
             # Export to TensorRT if requested and not already exported
             if self.use_tensorrt and not model_path.endswith('.engine'):
-                print("Exporting model to TensorRT FP16...")
-                self.model.export(format='engine', half=True, device=0)
-                engine_path = model_path.replace('.pt', '.engine')
-                self.model = YOLO(engine_path)
+                try:
+                    print("Exporting model to TensorRT FP16...")
+                    self.model.export(format='engine', half=True, device=0)
+                    engine_path = model_path.replace('.pt', '.engine')
+                    self.model = YOLO(engine_path)
+                except Exception as e:
+                    print(f"TensorRT export failed: {e}, falling back to PyTorch model")
+                    # Keep using the original model
             
             print(f"Model loaded: {model_path}")
         except Exception as e:
