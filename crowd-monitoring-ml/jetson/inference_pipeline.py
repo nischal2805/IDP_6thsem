@@ -78,18 +78,18 @@ class JetsonInferencePipeline:
         
         self.pose_estimator = PoseEstimator(
             model_path="yolov8n-pose.pt",
-            device="cuda",
+            device="cpu",
             use_tensorrt=use_tensorrt
         )
         
         self.fall_detector = MLFallDetector(
             use_lstm=False,  # Start with rule-based
-            device="cuda"
+            device="cpu"
         )
         
         self.density_estimator = CrowdDensityEstimator(
             backend="auto",
-            device="cuda"
+            device="cpu"
         )
         
         self.flow_analyzer = OpticalFlowAnalyzer(
