@@ -123,10 +123,9 @@ class JetsonInferencePipeline:
         # Initialize camera
         if CV2_AVAILABLE:
             print(f"Opening camera {self.camera_source}...")
-            self.cap = cv2.VideoCapture(self.camera_source)
             
-            # Give camera time to initialize
-            time.sleep(1)
+            # Use V4L2 backend explicitly for USB cameras on Jetson
+            self.cap = cv2.VideoCapture(self.camera_source, cv2.CAP_V4L2)
             
             if not self.cap.isOpened():
                 print(f"❌ Failed to open camera {self.camera_source}")
@@ -135,17 +134,37 @@ class JetsonInferencePipeline:
                 os.system("ls -l /dev/video* 2>/dev/null || echo 'No video devices found'")
                 return False
             
-            # Set camera properties
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            # Set camera properties BEFORE first read (critical for USB cameras)
+            # Start with lower resolution to ensure compatibility
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             self.cap.set(cv2.CAP_PROP_FPS, 30)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer for lower latency
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            
+            # Give camera time to initialize and adjust settings
+            print("Waiting for camera to initialize...")
+            time.sleep(2)
+            
+            # Flush initial frames (often corrupted)
+            for i in range(5):
+                self.cap.grab()
             
             # Test read
             ret, test_frame = self.cap.read()
             if not ret:
                 print("❌ Camera opened but cannot read frames")
-                return False
+                print("Trying alternative settings...")
+                
+                # Try without MJPG
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
+                time.sleep(1)
+                ret, test_frame = self.cap.read()
+                
+                if not ret:
+                    print("❌ Still failed. Camera may need manual configuration.")
+                    return False
+            
             print(f"✅ Camera initialized: {test_frame.shape[1]}x{test_frame.shape[0]}")
         
         # Connect GPS
