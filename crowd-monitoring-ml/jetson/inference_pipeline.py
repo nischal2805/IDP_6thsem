@@ -412,6 +412,19 @@ class JetsonInferencePipeline:
             return
         
         try:
+            # Convert numpy types to native Python types for JSON serialization
+            def convert_types(obj):
+                if isinstance(obj, dict):
+                    return {k: convert_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_types(i) for i in obj]
+                elif hasattr(obj, 'item'):  # numpy scalar
+                    return obj.item()
+                elif hasattr(obj, 'tolist'):  # numpy array
+                    return obj.tolist()
+                return obj
+            
+            result = convert_types(result)
             data = json.dumps(result).encode('utf-8')
             # Send length prefix then data
             self.socket.sendall(struct.pack('>I', len(data)) + data)
