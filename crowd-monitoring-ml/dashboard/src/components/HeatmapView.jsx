@@ -1,6 +1,16 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 
 export default function HeatmapView({ densityData, persons, anomaly }) {
+  const [frameUrl, setFrameUrl] = useState('');
+  
+  // Poll for new frames every 200ms
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setFrameUrl(`http://localhost:8080/api/video_feed?t=${Date.now()}`);
+    }, 200);
+    return () => clearInterval(interval);
+  }, []);
+  
   const heatmapCells = useMemo(() => {
     const cells = [];
     const gridSize = 10;
@@ -34,15 +44,17 @@ export default function HeatmapView({ densityData, persons, anomaly }) {
 
   return (
     <div className="relative bg-dark rounded-lg overflow-hidden" style={{ height: 400 }}>
-      {/* Live Video Feed from ground server proxy */}
-      <img 
-        src="http://localhost:8080/api/video_feed" 
-        alt="Live Camera Feed"
-        className="absolute inset-0 w-full h-full object-cover"
-        onError={(e) => {
-          e.target.style.display = 'none';
-        }}
-      />
+      {/* Live Video Feed */}
+      {frameUrl && (
+        <img 
+          src={frameUrl} 
+          alt="Live Camera Feed"
+          className="absolute inset-0 w-full h-full object-cover"
+          onError={(e) => {
+            e.target.style.opacity = '0';
+          }}
+        />
+      )}
       
       {/* Heatmap Overlay */}
       <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full" preserveAspectRatio="none" style={{ mixBlendMode: 'screen' }}>

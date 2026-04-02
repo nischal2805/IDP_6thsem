@@ -320,7 +320,10 @@ class CrowdDensityEstimator:
         h, w = frame.shape[:2]
         density_map = np.zeros((h, w), dtype=np.float32)
         
-        # If we have person detections, use them for realistic density
+        # Count is simply number of detected persons
+        count = float(len(detections)) if detections else 0.0
+        
+        # If we have person detections, use them for realistic density map
         if detections and len(detections) > 0:
             sigma = 40  # Kernel spread per person
             for det in detections:
@@ -336,22 +339,7 @@ class CrowdDensityEstimator:
                     # Add gaussian kernel at person location
                     y, x = np.ogrid[:h, :w]
                     gaussian = np.exp(-((x - cx)**2 + (y - cy)**2) / (2 * sigma**2))
-                    density_map += gaussian * 2.0
-            
-            count = float(len(detections))
-        else:
-            # Fallback: random blobs
-            num_clusters = np.random.randint(2, 5)
-            for _ in range(num_clusters):
-                cx, cy = np.random.randint(0, w), np.random.randint(0, h)
-                sigma = np.random.randint(30, 60)
-                intensity = np.random.uniform(0.5, 1.5)
-                
-                y, x = np.ogrid[:h, :w]
-                gaussian = np.exp(-((x - cx)**2 + (y - cy)**2) / (2 * sigma**2))
-                density_map += gaussian * intensity
-            
-            count = density_map.sum() * 0.05
+                    density_map += gaussian
         
         return self._build_result(count, density_map)
     

@@ -36,6 +36,7 @@ class SystemState:
     total_frames: int = 0
     active_alerts: List[Dict] = None
     forecast: Optional[Dict] = None
+    latest_frame: Optional[bytes] = None  # Latest JPEG frame from Jetson
     
     def __post_init__(self):
         if self.active_alerts is None:
@@ -118,21 +119,34 @@ async def handle_jetson_connection(reader: asyncio.StreamReader, writer: asyncio
     
     try:
         while True:
-            # Read length prefix
+            # Read length prefix for JSON
             length_bytes = await reader.readexactly(4)
             length = struct.unpack('>I', length_bytes)[0]
             
             # Read JSON payload
             data_bytes = await reader.readexactly(length)
-            data = json.loads(data_bytes.decode('utf-8'))
+            packet = json.loads(data_bytes.decode('utf-8'))
             
-            # Process data
-            await process_jetson_data(data)
+            # Check if frame data follows
+            if packet.get('type') == 'inference' and 'frame_size' in packet:
+                frame_size = packet['frame_size']
+                # Read JPEG frame
+                frame_bytes = await reader.readexactly(frame_size)
+                # Store latest frame
+                state.latest_frame = frame_bytes
+                
+                # Process inference data
+                await process_jetson_data(packet['data'])
+            else:
+                # Old format without frame
+                await process_jetson_data(packet)
             
     except asyncio.IncompleteReadError:
         print("Jetson disconnected")
     except Exception as e:
         print(f"Jetson connection error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         state.connected_jetson = False
         writer.close()
@@ -340,25 +354,15 @@ async def get_history():
 
 
 @app.get("/api/video_feed")
-async def video_feed_proxy():
-    """Proxy video feed from Jetson web server."""
-    import httpx
-    from fastapi.responses import StreamingResponse
+async def video_feed():
+    """Stream latest JPEG frame from Jetson."""
+    from fastapi.responses import Response
     
-    try:
-        # Proxy request to Jetson's web_stream_server
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            async def generate():
-                async with client.stream("GET", "http://10.161.127.240:8081/video_feed") as response:
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
-            
-            return StreamingResponse(
-                generate(),
-                media_type="multipart/x-mixed-replace; boundary=FRAME"
-            )
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Video stream unavailable: {e}")
+    if state.latest_frame:
+        return Response(content=state.latest_frame, media_type="image/jpeg")
+    else:
+        # Return placeholder image
+        raise HTTPException(status_code=404, detail="No frame available")
 
 
 @app.post("/api/test/alert")

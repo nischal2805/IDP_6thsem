@@ -406,8 +406,8 @@ class JetsonInferencePipeline:
             print("   Continuing in local-only mode...")
             self.connected = False
     
-    def _send_result(self, result: Dict):
-        """Send result to ground server."""
+    def _send_result(self, result: Dict, frame: np.ndarray):
+        """Send result and JPEG frame to ground server."""
         if not self.connected or not self.socket:
             return
         
@@ -432,9 +432,26 @@ class JetsonInferencePipeline:
                 return obj
             
             result = convert_types(result)
-            data = json.dumps(result).encode('utf-8')
-            # Send length prefix then data
-            self.socket.sendall(struct.pack('>I', len(data)) + data)
+            
+            # Encode frame as JPEG
+            _, jpeg_buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            jpeg_bytes = jpeg_buffer.tobytes()
+            
+            # Create packet with JSON + JPEG
+            packet = {
+                'type': 'inference',
+                'data': result,
+                'frame_size': len(jpeg_bytes)
+            }
+            
+            json_bytes = json.dumps(packet).encode('utf-8')
+            
+            # Send: [json_length(4)][json_data][jpeg_data]
+            self.socket.sendall(
+                struct.pack('>I', len(json_bytes)) + 
+                json_bytes + 
+                jpeg_bytes
+            )
         except Exception as e:
             print(f"Send error: {e}")
             self.connected = False
@@ -479,7 +496,7 @@ class JetsonInferencePipeline:
             
             # Send to server
             if self.connected:
-                self._send_result(result)
+                self._send_result(result, frame)
             
             # Display
             if self.enable_display and CV2_AVAILABLE:
@@ -537,35 +554,13 @@ class JetsonInferencePipeline:
         flow_result = self.flow_analyzer.analyze(frame)
         flow_time = flow_result.inference_time_ms
         
-        # 5. Generate alerts (with higher thresholds to reduce false positives)
+        # 5. Generate alerts (DISABLED - no alerts generated)
         alerts = []
         
-        # Only alert on confirmed falls with high confidence
-        for event in fall_events:
-            if event.confirmed and event.confidence > 0.8:
-                alert = self.alert_manager.create_fall_alert(
-                    person_id=event.person_id,
-                    confidence=event.confidence,
-                    bbox=tuple(event.bbox) if event.bbox is not None else None,
-                    duration=event.duration_seconds
-                )
-                alerts.append(json.loads(alert.to_json()))
-        
-        # Only alert on high-confidence anomalies
-        if flow_result.anomaly_type in [AnomalyType.PANIC, AnomalyType.STAMPEDE] and flow_result.confidence > 0.7:
-            alert = self.alert_manager.create_panic_alert(
-                confidence=flow_result.confidence,
-                estimated_count=len(detections)
-            )
-            alerts.append(json.loads(alert.to_json()))
-        
-        # Check crush risk from density (much higher threshold)
-        if density_result.peak_density > 15.0:  # Raised from 6.0
-            alert = self.alert_manager.create_crush_risk_alert(
-                density=density_result.peak_density,
-                location=density_result.peak_location
-            )
-            alerts.append(json.loads(alert.to_json()))
+        # TODO: Re-enable alerts when thresholds are properly calibrated
+        # Fall detection: requires manual testing and threshold tuning
+        # Panic detection: requires optical flow calibration
+        # Crush risk: requires proper density per m² calculation
         
         # Get current GPS
         gps = self.gps_manager.get_current_position()
