@@ -397,7 +397,7 @@ class JetsonInferencePipeline:
         
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5)  # 5 second timeout
+            self.socket.settimeout(30)  # 30 second timeout for more stability
             self.socket.connect((self.server_host, self.server_port))
             self.connected = True
             print(f"✅ Connected to ground server at {self.server_host}:{self.server_port}")
@@ -453,8 +453,11 @@ class JetsonInferencePipeline:
                 jpeg_bytes
             )
         except Exception as e:
-            print(f"Send error: {e}")
+            print(f"⚠️ Send error: {e}")
+            import traceback
+            traceback.print_exc()
             self.connected = False
+            print("❌ Connection to server lost. Running in local-only mode.")
     
     def _run_loop(self):
         """Main inference loop."""
@@ -520,7 +523,8 @@ class JetsonInferencePipeline:
             if self.frame_count % 30 == 0:
                 runtime = time.time() - self.start_time
                 fps = self.frame_count / runtime if runtime > 0 else 0
-                print(f"📊 FPS: {fps:.1f} | Frames: {self.frame_count} | Connected: {self.connected}")
+                alert_count = len(result.get('alerts', []))
+                print(f"📊 Frame: {self.frame_count} | FPS: {fps:.1f} | Persons: {result['person_count']} | Alerts: {alert_count} | Connected: {self.connected}")
     
     def _process_frame(self, frame: np.ndarray) -> Dict:
         """
@@ -554,13 +558,40 @@ class JetsonInferencePipeline:
         flow_result = self.flow_analyzer.analyze(frame)
         flow_time = flow_result.inference_time_ms
         
-        # 5. Generate alerts (DISABLED - no alerts generated)
+        # 5. Generate alerts
         alerts = []
         
-        # TODO: Re-enable alerts when thresholds are properly calibrated
-        # Fall detection: requires manual testing and threshold tuning
-        # Panic detection: requires optical flow calibration
-        # Crush risk: requires proper density per m² calculation
+        # Fall detection alerts
+        for fall_event in fall_events:
+            if fall_event.confirmed and fall_event.confidence > 0.7:
+                alert = self.alert_manager.create_fall_alert(
+                    person_id=fall_event.person_id,
+                    confidence=fall_event.confidence,
+                    duration_seconds=fall_event.duration_seconds
+                )
+                alerts.append(alert)
+                print(f"🚨 FALL DETECTED: Person {fall_event.person_id} | Confidence: {fall_event.confidence:.2f} | Duration: {fall_event.duration_seconds:.1f}s")
+        
+        # Panic detection alerts (optical flow anomaly)
+        if flow_result.anomaly_detected and flow_result.anomaly_type == AnomalyType.PANIC:
+            if flow_result.confidence > 0.8:  # High confidence threshold
+                alert = self.alert_manager.create_panic_alert(
+                    confidence=flow_result.confidence,
+                    magnitude=flow_result.global_magnitude,
+                    estimated_people=len(detections)
+                )
+                alerts.append(alert)
+                print(f"⚠️ PANIC DETECTED: Confidence: {flow_result.confidence:.2f} | People affected: {len(detections)}")
+        
+        # Crush risk alerts (high density)
+        if density_result.peak_density > 6.0:  # persons per m² threshold
+            alert = self.alert_manager.create_crush_risk_alert(
+                density=density_result.peak_density,
+                location=density_result.peak_location,
+                affected_count=int(density_result.count)
+            )
+            alerts.append(alert)
+            print(f"🔴 CRUSH RISK: Density: {density_result.peak_density:.1f} persons/m² | Location: {density_result.peak_location}")
         
         # Get current GPS
         gps = self.gps_manager.get_current_position()

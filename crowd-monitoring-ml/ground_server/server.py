@@ -84,7 +84,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:8080",  # Production dashboard
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -161,6 +166,13 @@ async def process_jetson_data(data: Dict):
     state.last_update = time.time()
     state.total_frames += 1
     
+    # Log basic stats every 30 frames
+    if state.total_frames % 30 == 0:
+        person_count = data.get("person_count", 0)
+        density_count = data.get("density", {}).get("count", 0)
+        alert_count = len(data.get("alerts", []))
+        print(f"📊 Jetson data received | Frame: {state.total_frames} | Persons: {person_count} | Density: {density_count:.0f} | Alerts: {alert_count}")
+    
     # Update forecaster with density count
     density_count = data.get("density", {}).get("count", 0)
     forecaster.update(density_count)
@@ -193,6 +205,8 @@ async def handle_alert(alert: Dict):
     alert_type = alert.get("type")
     location = alert.get("location", {})
     
+    print(f"📢 Processing alert: {alert_type.upper()} | ID: {alert.get('alert_id', 'UNKNOWN')} | Confidence: {alert.get('confidence', 0):.2f}")
+    
     if alert_type == "fall":
         await telegram_bot.send_fall_alert(
             alert_id=alert.get("alert_id", "UNKNOWN"),
@@ -202,6 +216,7 @@ async def handle_alert(alert: Dict):
             gps_lng=location.get("lng"),
             duration=alert.get("data", {}).get("duration_seconds", 0)
         )
+        print(f"   ✅ Fall alert sent to Telegram")
     
     elif alert_type == "panic":
         await telegram_bot.send_panic_alert(
@@ -212,6 +227,7 @@ async def handle_alert(alert: Dict):
             gps_lng=location.get("lng"),
             severity=alert.get("data", {}).get("severity", "HIGH")
         )
+        print(f"   ✅ Panic alert sent to Telegram")
     
     elif alert_type == "crush_risk":
         await telegram_bot.send_crush_risk_alert(
@@ -220,6 +236,7 @@ async def handle_alert(alert: Dict):
             gps_lat=location.get("lat"),
             gps_lng=location.get("lng")
         )
+        print(f"   ✅ Crush risk alert sent to Telegram")
 
 
 # ==================== Dashboard WebSocket ====================
@@ -284,10 +301,15 @@ async def broadcast_to_dashboard(message: Dict):
     for client in dashboard_clients:
         try:
             await client.send_json(message)
-        except:
+        except WebSocketDisconnect:
+            disconnected.add(client)
+        except Exception as e:
+            print(f"⚠️ Error broadcasting to dashboard client: {e}")
             disconnected.add(client)
     
     dashboard_clients.difference_update(disconnected)
+    if disconnected:
+        print(f"📊 Removed {len(disconnected)} disconnected dashboard client(s). Active: {len(dashboard_clients)}")
 
 
 async def periodic_status_update():
@@ -359,10 +381,18 @@ async def video_feed():
     from fastapi.responses import Response
     
     if state.latest_frame:
-        return Response(content=state.latest_frame, media_type="image/jpeg")
+        return Response(
+            content=state.latest_frame, 
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     else:
-        # Return placeholder image
-        raise HTTPException(status_code=404, detail="No frame available")
+        # Return 404 when no frame available
+        raise HTTPException(status_code=404, detail="No video frame available yet. Waiting for Jetson connection.")
 
 
 @app.post("/api/test/alert")

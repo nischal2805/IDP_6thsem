@@ -83,6 +83,9 @@ async def broadcast_state():
     outdoor_heatmap = compute_heatmap(outdoor_positions, "outdoor", grid_size=25, sigma=1.5)
     
     # Build payload
+    # Get stadium-specific stats if applicable
+    stadium_stats = simulation.get_stadium_stats() if scenario_config.get("type") == "stadium" else {}
+    
     payload = {
         "tick": simulation.tick,
         "agents": simulation.get_state_for_broadcast(),
@@ -106,7 +109,8 @@ async def broadcast_state():
         "drone_b": coordinator.get_drone_b_status(len(outdoor_agents)),
         "panic_active": len(panic_manager.get_panic_state()["panicking_agents"]) > 0,
         "zones": zone_stats,
-        "lanes": lane_stats
+        "lanes": lane_stats,
+        "stadium": stadium_stats  # Stadium-specific data
     }
     
     # Record history

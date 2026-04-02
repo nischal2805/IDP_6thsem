@@ -192,25 +192,6 @@ export default function App() {
             timing={inferenceData?.timing_ms}
             falls={inferenceData?.falls}
           />
-
-          {/* Quick Actions */}
-          <div className="card">
-            <h3 className="font-bold mb-3">Quick Actions</h3>
-            <div className="space-y-2">
-              <button
-                className="w-full btn-primary"
-                onClick={() => fetch('/api/test/alert?alert_type=fall', { method: 'POST' })}
-              >
-                🧪 Test Fall Alert
-              </button>
-              <button
-                className="w-full btn-danger"
-                onClick={() => fetch('/api/test/alert?alert_type=panic', { method: 'POST' })}
-              >
-                🧪 Test Panic Alert
-              </button>
-            </div>
-          </div>
         </div>
       </div>
 

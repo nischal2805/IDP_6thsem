@@ -1,11 +1,13 @@
 """
 Crowd simulation wrapper using PySocialForce.
 Handles agent spawning, despawning, demographics, and environment layout.
+Implements realistic crowd behavior with state machines and environment awareness.
 """
 import numpy as np
 import random
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, field
+from enum import Enum
 from scenarios import get_scenario
 
 # Try to import pysocialforce, fall back to mock if not available
@@ -40,10 +42,27 @@ SLOW_AGENT_RATIO = 0.10  # 10% elderly/mobility-impaired
 NORMAL_VELOCITY = 1.2  # m/s
 SLOW_VELOCITY = 0.6  # m/s
 
+# Environment awareness thresholds
+DENSITY_SLOWDOWN_THRESHOLD = 2.0  # people per m² - start slowing down
+DENSITY_STOP_THRESHOLD = 4.0      # people per m² - stop/shuffle
+COMFORT_ZONE_RADIUS = 1.5         # meters - personal space
+AWARENESS_RADIUS = 3.0            # meters - how far agents "see"
+
+
+class AgentState(Enum):
+    """Behavioral states for realistic crowd behavior."""
+    QUEUING = "queuing"           # Waiting in outdoor queue
+    WALKING = "walking"           # Moving toward goal
+    ENTERING = "entering"         # Passing through gate/door
+    FINDING_SEAT = "finding_seat" # Looking for seat in stadium
+    SEATED = "seated"             # Sitting in seat (stationary)
+    EVACUATING = "evacuating"     # Emergency exit mode
+    WANDERING = "wandering"       # Random movement (no specific goal)
+
 
 @dataclass
 class Agent:
-    """Represents a single agent in the simulation."""
+    """Represents a single agent in the simulation with behavioral state."""
     id: int
     x: float
     y: float
@@ -55,11 +74,23 @@ class Agent:
     is_panicking: bool = False
     is_indoor: bool = False
     group_id: Optional[int] = None
+    
+    # Behavioral state
+    state: AgentState = AgentState.WALKING
+    assigned_stand: Optional[str] = None  # For stadium: "left", "center", "right"
+    seat_position: Optional[Tuple[float, float]] = None  # Assigned seat
+    
+    # Environment awareness
+    local_density: float = 0.0            # People per m² around agent
+    speed_modifier: float = 1.0           # Density-based speed adjustment
+    patience: float = 1.0                 # How long willing to wait (0-1)
+    time_in_state: float = 0.0            # Time spent in current state
 
 
 class CrowdSimulation:
     """
     Manages crowd simulation using PySocialForce or fallback physics.
+    Implements realistic crowd behavior with environment awareness.
     """
     
     def __init__(self, scenario: int = 1):
@@ -85,6 +116,67 @@ class CrowdSimulation:
         self.bidirectional_mode = "entry"  # "entry" or "exit"
         self.bidirectional_timer = 0.0
         self.bidirectional_interval = 10.0  # Switch every 10 seconds
+        
+        # Stadium configuration (Scenario 4 - enhanced)
+        self.stadium_stands = self._init_stadium_stands()
+        self.stand_gates: Dict[str, bool] = {"left": True, "center": True, "right": True}
+        self.seats: Dict[str, List[Tuple[float, float, bool]]] = {}  # (x, y, occupied)
+        if self.scenario_config.get("type") == "stadium":
+            self._init_stadium_seats()
+    
+    def _init_stadium_stands(self) -> Dict:
+        """Initialize stadium stand layout with 3 stands."""
+        return {
+            "left": {
+                "name": "Stand A (Left)",
+                "bounds": {"x_min": 0, "x_max": 6, "y_min": 8, "y_max": 20},
+                "entrance": (3, 7),
+                "capacity": 40,
+                "current": 0,
+                "gate_open": True
+            },
+            "center": {
+                "name": "Stand B (Center)",
+                "bounds": {"x_min": 7, "x_max": 13, "y_min": 12, "y_max": 20},
+                "entrance": (10, 11),
+                "capacity": 50,
+                "current": 0,
+                "gate_open": True
+            },
+            "right": {
+                "name": "Stand C (Right)",
+                "bounds": {"x_min": 14, "x_max": 20, "y_min": 8, "y_max": 20},
+                "entrance": (17, 7),
+                "capacity": 40,
+                "current": 0,
+                "gate_open": True
+            }
+        }
+    
+    def _init_stadium_seats(self):
+        """Generate seat positions for each stadium stand."""
+        for stand_id, stand in self.stadium_stands.items():
+            bounds = stand["bounds"]
+            seats = []
+            
+            # Generate seat grid - rows of seats
+            x_min, x_max = bounds["x_min"] + 0.5, bounds["x_max"] - 0.5
+            y_min, y_max = bounds["y_min"] + 0.5, bounds["y_max"] - 0.5
+            
+            # Seat spacing
+            row_spacing = 1.2
+            seat_spacing = 1.0
+            
+            y = y_min + 0.5
+            while y < y_max:
+                x = x_min + 0.5
+                while x < x_max:
+                    seats.append((x, y, False))  # x, y, occupied
+                    x += seat_spacing
+                y += row_spacing
+            
+            self.seats[stand_id] = seats
+            stand["capacity"] = len(seats)
     
     def _create_obstacles(self) -> List[List[List[float]]]:
         """Create wall obstacles with door openings."""
@@ -149,6 +241,13 @@ class CrowdSimulation:
         self.gate_open = True
         self.bidirectional_mode = "entry"
         self.bidirectional_timer = 0.0
+        
+        # Reset stadium state
+        self.stadium_stands = self._init_stadium_stands()
+        self.stand_gates = {"left": True, "center": True, "right": True}
+        self.seats = {}
+        if self.scenario_config.get("type") == "stadium":
+            self._init_stadium_seats()
     
     def spawn_agent(self, x: float, y: float, goal_x: float, goal_y: float, 
                     is_slow: bool = False, group_id: Optional[int] = None) -> Agent:
@@ -252,6 +351,14 @@ class CrowdSimulation:
         states = []
         for agent in self.agents:
             vel = SLOW_VELOCITY if agent.is_slow else NORMAL_VELOCITY
+            # Apply density-based speed modifier
+            vel *= agent.speed_modifier
+            
+            # Seated agents don't move
+            if agent.state == AgentState.SEATED:
+                states.append([agent.x, agent.y, 0, 0, agent.x, agent.y])
+                continue
+            
             # Compute velocity direction towards goal
             dx = agent.goal_x - agent.x
             dy = agent.goal_y - agent.y
@@ -266,6 +373,154 @@ class CrowdSimulation:
         
         return np.array(states)
     
+    def _compute_local_densities(self):
+        """Compute local density around each agent for environment-aware behavior."""
+        if len(self.agents) < 2:
+            for agent in self.agents:
+                agent.local_density = 0.0
+                agent.speed_modifier = 1.0
+            return
+        
+        positions = np.array([[a.x, a.y] for a in self.agents])
+        
+        for i, agent in enumerate(self.agents):
+            # Count neighbors within awareness radius
+            distances = np.sqrt(np.sum((positions - positions[i])**2, axis=1))
+            neighbors_in_radius = np.sum((distances > 0) & (distances < AWARENESS_RADIUS))
+            
+            # Calculate local density (people per m² in awareness circle)
+            area = np.pi * AWARENESS_RADIUS**2
+            agent.local_density = neighbors_in_radius / area
+            
+            # Compute speed modifier based on density
+            if agent.local_density < DENSITY_SLOWDOWN_THRESHOLD:
+                agent.speed_modifier = 1.0
+            elif agent.local_density < DENSITY_STOP_THRESHOLD:
+                # Linear slowdown between thresholds
+                ratio = (agent.local_density - DENSITY_SLOWDOWN_THRESHOLD) / \
+                        (DENSITY_STOP_THRESHOLD - DENSITY_SLOWDOWN_THRESHOLD)
+                agent.speed_modifier = max(0.3, 1.0 - ratio * 0.7)
+            else:
+                # Very crowded - shuffle speed
+                agent.speed_modifier = 0.2
+    
+    def _update_agent_states(self, dt: float):
+        """Update behavioral states for all agents based on context."""
+        scenario_type = self.scenario_config.get("type")
+        
+        for agent in self.agents:
+            agent.time_in_state += dt
+            
+            # Skip seated agents
+            if agent.state == AgentState.SEATED:
+                continue
+            
+            # Stadium-specific state transitions
+            if scenario_type == "stadium":
+                self._update_stadium_agent_state(agent, dt)
+                continue
+            
+            # General state transitions
+            if not agent.is_indoor:
+                # Outdoor - queuing behavior
+                if agent.y > self.holding_line_y and not self.gate_open:
+                    agent.state = AgentState.QUEUING
+                else:
+                    agent.state = AgentState.WALKING
+            else:
+                # Indoor state based on context
+                if agent.is_panicking:
+                    agent.state = AgentState.EVACUATING
+                elif agent.state == AgentState.ENTERING:
+                    # Just entered, transition to walking
+                    if agent.y > 2.0:
+                        agent.state = AgentState.WALKING
+                else:
+                    agent.state = AgentState.WALKING
+    
+    def _update_stadium_agent_state(self, agent: Agent, dt: float):
+        """Update agent state for stadium scenario."""
+        if not agent.is_indoor:
+            # Outdoor queuing
+            agent.state = AgentState.QUEUING if not self.gate_open else AgentState.WALKING
+            return
+        
+        # Indoor stadium behavior
+        if agent.state == AgentState.ENTERING:
+            # Moving toward assigned stand entrance
+            if agent.y > 3.0:
+                agent.state = AgentState.FINDING_SEAT
+                self._assign_seat_to_agent(agent)
+        
+        elif agent.state == AgentState.FINDING_SEAT:
+            # Check if reached seat
+            if agent.seat_position:
+                dist = np.sqrt((agent.x - agent.seat_position[0])**2 + 
+                              (agent.y - agent.seat_position[1])**2)
+                if dist < 0.5:
+                    agent.state = AgentState.SEATED
+                    agent.vx = 0
+                    agent.vy = 0
+        
+        elif agent.state == AgentState.WALKING:
+            # Just entered building, assign to a stand
+            self._assign_stand_to_agent(agent)
+            agent.state = AgentState.ENTERING
+    
+    def _assign_stand_to_agent(self, agent: Agent):
+        """Assign agent to an available stadium stand."""
+        # Find stand with most available seats
+        available_stands = []
+        for stand_id, stand in self.stadium_stands.items():
+            if stand["gate_open"] and stand["current"] < stand["capacity"]:
+                available_stands.append((stand_id, stand["capacity"] - stand["current"]))
+        
+        if not available_stands:
+            # All full - assign to largest stand anyway
+            agent.assigned_stand = "center"
+        else:
+            # Weighted random by availability
+            total_avail = sum(a[1] for a in available_stands)
+            r = random.uniform(0, total_avail)
+            cumsum = 0
+            for stand_id, avail in available_stands:
+                cumsum += avail
+                if r <= cumsum:
+                    agent.assigned_stand = stand_id
+                    break
+        
+        # Set goal to stand entrance
+        stand = self.stadium_stands[agent.assigned_stand]
+        agent.goal_x, agent.goal_y = stand["entrance"]
+    
+    def _assign_seat_to_agent(self, agent: Agent):
+        """Assign an empty seat to the agent."""
+        if not agent.assigned_stand or agent.assigned_stand not in self.seats:
+            return
+        
+        stand_seats = self.seats[agent.assigned_stand]
+        
+        # Find first empty seat (front-to-back filling)
+        for i, (x, y, occupied) in enumerate(stand_seats):
+            if not occupied:
+                agent.seat_position = (x, y)
+                agent.goal_x = x
+                agent.goal_y = y
+                # Mark seat as occupied
+                self.seats[agent.assigned_stand][i] = (x, y, True)
+                self.stadium_stands[agent.assigned_stand]["current"] += 1
+                
+                # Check if stand is now full
+                stand = self.stadium_stands[agent.assigned_stand]
+                if stand["current"] >= stand["capacity"]:
+                    stand["gate_open"] = False
+                return
+        
+        # No seats available - wander in stand area
+        bounds = self.stadium_stands[agent.assigned_stand]["bounds"]
+        agent.goal_x = random.uniform(bounds["x_min"] + 1, bounds["x_max"] - 1)
+        agent.goal_y = random.uniform(bounds["y_min"] + 1, bounds["y_max"] - 1)
+    
     def _update_agents_from_state(self, states: np.ndarray):
         """Update agent positions from simulation state."""
         for i, agent in enumerate(self.agents):
@@ -278,7 +533,7 @@ class CrowdSimulation:
     
     def step(self, dt: float = 0.067, gate_open: bool = True):
         """
-        Advance simulation by one time step.
+        Advance simulation by one time step with realistic crowd behavior.
         
         Args:
             dt: Time step in seconds (~15 FPS = 0.067s)
@@ -312,6 +567,12 @@ class CrowdSimulation:
         if not self.agents:
             return
         
+        # Environment awareness - compute local densities for realistic behavior
+        self._compute_local_densities()
+        
+        # Update behavioral states based on context
+        self._update_agent_states(dt)
+        
         # Build state array
         state_array = self._build_state_array()
         
@@ -340,12 +601,18 @@ class CrowdSimulation:
                 if not agent.is_indoor and agent.y > self.holding_line_y:
                     agent.y = self.holding_line_y
                     agent.vy = 0
+                    agent.state = AgentState.QUEUING
         
         # Handle transitions through door
         self._handle_door_transitions()
         
-        # Scenario-specific exit handling
-        if self.scenario_config.get("has_exit"):
+        # Scenario-specific handling
+        scenario_type = self.scenario_config.get("type")
+        
+        if scenario_type == "stadium":
+            # Stadium-specific logic
+            self._handle_stadium_logic()
+        elif self.scenario_config.get("has_exit"):
             if scenario_type == "basic":
                 self._handle_exits()  # Top exit (Scenario 1)
             elif scenario_type == "bidirectional":
@@ -357,15 +624,46 @@ class CrowdSimulation:
         if self.scenario == 2:
             self._update_wandering_goals()
     
-    def _simple_physics_step(self, dt: float):
-        """Simple physics when PySocialForce not available."""
+    def _handle_stadium_logic(self):
+        """Handle stadium-specific behavior: stand gates, seating, etc."""
+        # Update stand occupancy counts
+        for stand_id in self.stadium_stands:
+            self.stadium_stands[stand_id]["current"] = 0
+        
         for agent in self.agents:
+            if agent.state == AgentState.SEATED and agent.assigned_stand:
+                self.stadium_stands[agent.assigned_stand]["current"] += 1
+        
+        # Check if all stands are full - close main gate
+        all_full = all(stand["current"] >= stand["capacity"] 
+                      for stand in self.stadium_stands.values())
+        if all_full:
+            self.gate_open = False
+    
+    def _simple_physics_step(self, dt: float):
+        """Simple physics when PySocialForce not available - with environment awareness."""
+        for agent in self.agents:
+            # Seated agents don't move
+            if agent.state == AgentState.SEATED:
+                agent.vx = 0
+                agent.vy = 0
+                continue
+            
             # Move towards goal
             dx = agent.goal_x - agent.x
             dy = agent.goal_y - agent.y
             dist = np.sqrt(dx**2 + dy**2)
             
+            # Base velocity with speed modifier for density
             vel = SLOW_VELOCITY if agent.is_slow else NORMAL_VELOCITY
+            vel *= agent.speed_modifier
+            
+            # Panicking agents move faster but erratically
+            if agent.is_panicking:
+                vel *= 1.5
+                # Add slight randomness to direction
+                dx += random.uniform(-0.3, 0.3)
+                dy += random.uniform(-0.3, 0.3)
             
             if dist > 0.5:
                 agent.vx = (dx / dist) * vel
@@ -410,23 +708,33 @@ class CrowdSimulation:
                     # Transition to indoor
                     agent.is_indoor = True
                     agent.y = max(agent.y, 1.0)
+                    agent.state = AgentState.ENTERING
+                    agent.time_in_state = 0.0
                     
                     # Set new goal based on scenario
-                    if self.scenario == 1:  # Entry + Exit
+                    if scenario_type == "stadium":
+                        # Stadium: assign to a stand and set initial walking goal
+                        agent.state = AgentState.WALKING
+                        # Will be assigned to stand in _update_stadium_agent_state
+                    elif self.scenario == 1:  # Entry + Exit
                         agent.goal_x = EXIT_X
                         agent.goal_y = INDOOR_HEIGHT + 1
+                        agent.state = AgentState.WALKING
                     elif scenario_type == "evacuation":
                         # Will panic and exit
                         agent.is_panicking = True
+                        agent.state = AgentState.EVACUATING
                         self._assign_evacuation_exit(agent)
                     elif scenario_type == "bidirectional":
                         # Wander briefly, then exit
                         agent.goal_x = random.uniform(5, INDOOR_WIDTH - 5)
                         agent.goal_y = random.uniform(5, INDOOR_HEIGHT - 5)
+                        agent.state = AgentState.WANDERING
                     else:
                         # Random wandering
                         agent.goal_x = random.uniform(3, INDOOR_WIDTH - 3)
                         agent.goal_y = random.uniform(3, INDOOR_HEIGHT - 3)
+                        agent.state = AgentState.WANDERING
     
     def _handle_exits(self):
         """Handle agents exiting (Scenario 1)."""
@@ -523,6 +831,7 @@ class CrowdSimulation:
             if agent.is_indoor:
                 agent.goal_x = random.uniform(5, INDOOR_WIDTH - 5)
                 agent.goal_y = random.uniform(5, INDOOR_HEIGHT - 5)
+                agent.state = AgentState.WANDERING
     
     def start_evacuation(self):
         """Start evacuation mode (Scenario 3)."""
@@ -535,6 +844,7 @@ class CrowdSimulation:
         for agent in self.agents:
             if agent.is_indoor:
                 agent.is_panicking = True
+                agent.state = AgentState.EVACUATING
                 self._assign_evacuation_exit(agent)
     
     def get_indoor_agents(self) -> List[Agent]:
@@ -551,7 +861,18 @@ class CrowdSimulation:
         return [[a.x, a.y] for a in agents]
     
     def get_state_for_broadcast(self) -> List[List]:
-        """Get agent state for WebSocket broadcast."""
+        """Get agent state for WebSocket broadcast with behavior info."""
+        # State encoding for frontend
+        state_map = {
+            AgentState.QUEUING: 0,
+            AgentState.WALKING: 1,
+            AgentState.ENTERING: 2,
+            AgentState.FINDING_SEAT: 3,
+            AgentState.SEATED: 4,
+            AgentState.EVACUATING: 5,
+            AgentState.WANDERING: 6
+        }
+        
         return [
             [
                 round(a.x, 2),
@@ -559,7 +880,31 @@ class CrowdSimulation:
                 round(a.vx, 2),
                 round(a.vy, 2),
                 1 if a.is_slow else 0,
-                1 if a.is_panicking else 0
+                1 if a.is_panicking else 0,
+                state_map.get(a.state, 1),  # Behavioral state
+                round(a.local_density, 2),   # Local density for debugging
+                a.assigned_stand or ""       # Stadium stand assignment
             ]
             for a in self.agents
         ]
+    
+    def get_stadium_stats(self) -> Dict:
+        """Get stadium-specific statistics for frontend display."""
+        if self.scenario_config.get("type") != "stadium":
+            return {}
+        
+        return {
+            "stands": {
+                stand_id: {
+                    "name": stand["name"],
+                    "current": stand["current"],
+                    "capacity": stand["capacity"],
+                    "gate_open": stand["gate_open"],
+                    "utilization": round(stand["current"] / stand["capacity"] * 100, 1) if stand["capacity"] > 0 else 0
+                }
+                for stand_id, stand in self.stadium_stands.items()
+            },
+            "total_seated": sum(1 for a in self.agents if a.state == AgentState.SEATED),
+            "total_capacity": sum(s["capacity"] for s in self.stadium_stands.values()),
+            "all_full": all(s["current"] >= s["capacity"] for s in self.stadium_stands.values())
+        }
