@@ -324,8 +324,9 @@ class CrowdDensityEstimator:
         if detections and len(detections) > 0:
             sigma = 40  # Kernel spread per person
             for det in detections:
-                bbox = det.get('bbox', [])
-                if len(bbox) == 4:
+                # PersonDetection has .bbox attribute (numpy array)
+                if hasattr(det, 'bbox'):
+                    bbox = det.bbox
                     # Person center
                     cx = int((bbox[0] + bbox[2]) / 2)
                     cy = int((bbox[1] + bbox[3]) / 2)

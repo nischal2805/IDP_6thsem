@@ -339,6 +339,28 @@ async def get_history():
     }
 
 
+@app.get("/api/video_feed")
+async def video_feed_proxy():
+    """Proxy video feed from Jetson web server."""
+    import httpx
+    from fastapi.responses import StreamingResponse
+    
+    try:
+        # Proxy request to Jetson's web_stream_server
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async def generate():
+                async with client.stream("GET", "http://10.161.127.240:8081/video_feed") as response:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+            
+            return StreamingResponse(
+                generate(),
+                media_type="multipart/x-mixed-replace; boundary=FRAME"
+            )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Video stream unavailable: {e}")
+
+
 @app.post("/api/test/alert")
 async def create_test_alert(alert_type: str = "fall"):
     """Create a test alert for development."""

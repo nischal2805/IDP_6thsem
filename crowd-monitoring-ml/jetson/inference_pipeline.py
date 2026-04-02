@@ -537,11 +537,12 @@ class JetsonInferencePipeline:
         flow_result = self.flow_analyzer.analyze(frame)
         flow_time = flow_result.inference_time_ms
         
-        # 5. Generate alerts
+        # 5. Generate alerts (with higher thresholds to reduce false positives)
         alerts = []
         
+        # Only alert on confirmed falls with high confidence
         for event in fall_events:
-            if event.confirmed:
+            if event.confirmed and event.confidence > 0.8:
                 alert = self.alert_manager.create_fall_alert(
                     person_id=event.person_id,
                     confidence=event.confidence,
@@ -550,15 +551,16 @@ class JetsonInferencePipeline:
                 )
                 alerts.append(json.loads(alert.to_json()))
         
-        if flow_result.anomaly_type in [AnomalyType.PANIC, AnomalyType.STAMPEDE]:
+        # Only alert on high-confidence anomalies
+        if flow_result.anomaly_type in [AnomalyType.PANIC, AnomalyType.STAMPEDE] and flow_result.confidence > 0.7:
             alert = self.alert_manager.create_panic_alert(
                 confidence=flow_result.confidence,
                 estimated_count=len(detections)
             )
             alerts.append(json.loads(alert.to_json()))
         
-        # Check crush risk from density
-        if density_result.peak_density > 6.0:
+        # Check crush risk from density (much higher threshold)
+        if density_result.peak_density > 15.0:  # Raised from 6.0
             alert = self.alert_manager.create_crush_risk_alert(
                 density=density_result.peak_density,
                 location=density_result.peak_location

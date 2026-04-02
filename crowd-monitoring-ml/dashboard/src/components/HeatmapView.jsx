@@ -34,9 +34,9 @@ export default function HeatmapView({ densityData, persons, anomaly }) {
 
   return (
     <div className="relative bg-dark rounded-lg overflow-hidden" style={{ height: 400 }}>
-      {/* Live Video Feed */}
+      {/* Live Video Feed from ground server proxy */}
       <img 
-        src="http://10.161.127.240:8081/video_feed" 
+        src="http://localhost:8080/api/video_feed" 
         alt="Live Camera Feed"
         className="absolute inset-0 w-full h-full object-cover"
         onError={(e) => {
