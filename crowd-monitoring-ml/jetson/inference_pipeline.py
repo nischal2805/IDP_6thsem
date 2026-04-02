@@ -413,15 +413,22 @@ class JetsonInferencePipeline:
         
         try:
             # Convert numpy types to native Python types for JSON serialization
+            import numpy as np
             def convert_types(obj):
                 if isinstance(obj, dict):
                     return {k: convert_types(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
+                elif isinstance(obj, (list, tuple)):
                     return [convert_types(i) for i in obj]
-                elif hasattr(obj, 'item'):  # numpy scalar
-                    return obj.item()
-                elif hasattr(obj, 'tolist'):  # numpy array
+                elif isinstance(obj, np.ndarray):
                     return obj.tolist()
+                elif isinstance(obj, (np.integer, np.int64, np.int32)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64, np.float32)):
+                    return float(obj)
+                elif isinstance(obj, np.bool_):
+                    return bool(obj)
+                elif hasattr(obj, 'item'):  # other numpy scalars
+                    return obj.item()
                 return obj
             
             result = convert_types(result)
