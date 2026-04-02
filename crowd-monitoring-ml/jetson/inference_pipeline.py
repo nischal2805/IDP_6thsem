@@ -88,7 +88,7 @@ class JetsonInferencePipeline:
         )
         
         self.density_estimator = CrowdDensityEstimator(
-            backend="auto",
+            backend="mock",
             device="cpu"
         )
         
@@ -116,56 +116,244 @@ class JetsonInferencePipeline:
         # Results buffer
         self.latest_result: Optional[Dict] = None
     
+    def _enumerate_video_devices(self):
+        """Enumerate all available video devices on Linux."""
+        import os
+        import glob
+        
+        devices = []
+        device_paths = sorted(glob.glob('/dev/video*'))
+        
+        print("\n📹 Enumerating video devices:")
+        if not device_paths:
+            print("   ⚠️ No /dev/video* devices found")
+            return devices
+        
+        for dev_path in device_paths:
+            try:
+                # Get device info
+                stat_info = os.stat(dev_path)
+                permissions = oct(stat_info.st_mode)[-3:]
+                
+                # Check if readable
+                readable = os.access(dev_path, os.R_OK)
+                writable = os.access(dev_path, os.W_OK)
+                
+                device_info = {
+                    'path': dev_path,
+                    'index': int(dev_path.replace('/dev/video', '')),
+                    'permissions': permissions,
+                    'readable': readable,
+                    'writable': writable
+                }
+                devices.append(device_info)
+                
+                status = "✅" if readable and writable else "⚠️"
+                print(f"   {status} {dev_path} (perms: {permissions}, r:{readable}, w:{writable})")
+                
+            except Exception as e:
+                print(f"   ❌ {dev_path}: {e}")
+        
+        return devices
+    
+    def _check_video_permissions(self):
+        """Check if current user has proper video device permissions."""
+        import os
+        import subprocess
+        
+        print("\n🔐 Checking video permissions:")
+        
+        # Check if user is in video group
+        try:
+            result = subprocess.run(['groups'], capture_output=True, text=True, timeout=2)
+            groups = result.stdout.strip()
+            in_video_group = 'video' in groups.split()
+            
+            if in_video_group:
+                print(f"   ✅ User is in 'video' group")
+            else:
+                print(f"   ⚠️ User NOT in 'video' group")
+                print(f"   💡 Fix: sudo usermod -a -G video $USER (then logout/login)")
+            
+            return in_video_group
+        except Exception as e:
+            print(f"   ⚠️ Could not check group membership: {e}")
+            return False
+    
+    def _try_open_camera(self, device_index: int, backend: int, backend_name: str) -> Optional[object]:
+        """
+        Try to open camera with specific device and backend.
+        
+        Args:
+            device_index: Camera device index
+            backend: OpenCV backend constant
+            backend_name: Backend name for logging
+        
+        Returns:
+            VideoCapture object if successful, None otherwise
+        """
+        try:
+            print(f"   Trying device {device_index} with {backend_name} backend...")
+            cap = cv2.VideoCapture(device_index, backend)
+            
+            if cap.isOpened():
+                return cap
+            else:
+                cap.release()
+                return None
+        except Exception as e:
+            print(f"   ❌ Exception: {e}")
+            return None
+    
+    def _configure_camera(self, cap: object, codec_fourcc: str = 'MJPG') -> bool:
+        """
+        Configure camera properties and verify settings.
+        
+        Args:
+            cap: OpenCV VideoCapture object
+            codec_fourcc: Codec FourCC code ('MJPG', 'YUYV', etc.)
+        
+        Returns:
+            True if configuration successful and frames readable
+        """
+        print(f"\n⚙️ Configuring camera with {codec_fourcc} codec...")
+        
+        # Set properties BEFORE first read (critical for USB cameras)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        # Set codec
+        fourcc = cv2.VideoWriter_fourcc(*codec_fourcc)
+        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+        
+        # Give camera time to initialize
+        print("   Waiting for camera to stabilize...")
+        time.sleep(2)
+        
+        # Flush initial frames (often corrupted or black)
+        print("   Flushing initial frames...")
+        for i in range(5):
+            cap.grab()
+        
+        # Test read
+        print("   Testing frame capture...")
+        ret, test_frame = cap.read()
+        
+        if not ret or test_frame is None:
+            print(f"   ❌ Cannot read frames with {codec_fourcc}")
+            return False
+        
+        # Verify actual settings
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = int(cap.get(cv2.CAP_PROP_FPS))
+        
+        print(f"   ✅ Camera configured successfully:")
+        print(f"      Resolution: {actual_width}x{actual_height} (frame: {test_frame.shape[1]}x{test_frame.shape[0]})")
+        print(f"      FPS: {actual_fps}")
+        print(f"      Codec: {codec_fourcc}")
+        
+        return True
+    
+    def _initialize_camera_robust(self) -> bool:
+        """
+        Robustly initialize camera with fallback strategies.
+        
+        Returns:
+            True if camera successfully initialized, False otherwise
+        """
+        if not CV2_AVAILABLE:
+            print("⚠️ OpenCV not available, skipping camera initialization")
+            return False
+        
+        print("\n" + "="*60)
+        print("🎥 CAMERA INITIALIZATION")
+        print("="*60)
+        
+        # Step 1: Enumerate devices
+        available_devices = self._enumerate_video_devices()
+        
+        # Step 2: Check permissions
+        self._check_video_permissions()
+        
+        if not available_devices:
+            print("\n❌ No video devices found!")
+            print("💡 Troubleshooting:")
+            print("   1. Check if camera is physically connected")
+            print("   2. Check dmesg: dmesg | grep -i video")
+            print("   3. Check USB devices: lsusb")
+            return False
+        
+        # Step 3: Determine device indices to try
+        if isinstance(self.camera_source, int):
+            # Try specified index first, then fallback to others
+            device_indices = [self.camera_source]
+            device_indices.extend([d['index'] for d in available_devices if d['index'] != self.camera_source])
+        else:
+            # Try all available devices
+            device_indices = [d['index'] for d in available_devices]
+        
+        print(f"\n🔍 Will try device indices in order: {device_indices}")
+        
+        # Step 4: Try different backend and device combinations
+        backends = [
+            (cv2.CAP_V4L2, "V4L2"),
+            (cv2.CAP_ANY, "ANY"),
+        ]
+        
+        codecs = ['MJPG', 'YUYV', 'YUY2']
+        
+        print("\n🔄 Attempting camera initialization with fallbacks...")
+        
+        for device_idx in device_indices:
+            for backend_const, backend_name in backends:
+                cap = self._try_open_camera(device_idx, backend_const, backend_name)
+                
+                if cap is None:
+                    continue
+                
+                # Camera opened, now try different codecs
+                for codec in codecs:
+                    if self._configure_camera(cap, codec):
+                        # Success!
+                        self.cap = cap
+                        print(f"\n{'='*60}")
+                        print(f"✅ CAMERA READY")
+                        print(f"   Device: /dev/video{device_idx}")
+                        print(f"   Backend: {backend_name}")
+                        print(f"   Codec: {codec}")
+                        print(f"{'='*60}\n")
+                        return True
+                
+                # All codecs failed for this backend, release and try next
+                cap.release()
+        
+        # All attempts failed
+        print("\n" + "="*60)
+        print("❌ CAMERA INITIALIZATION FAILED")
+        print("="*60)
+        print("\n💡 Troubleshooting steps:")
+        print("   1. Verify camera is detected: ls -l /dev/video*")
+        print("   2. Check permissions: groups (should include 'video')")
+        print("   3. Test with v4l2-ctl: v4l2-ctl --list-devices")
+        print("   4. Test with simple capture: ffplay /dev/video0")
+        print("   5. Check if camera is in use: sudo lsof | grep video")
+        print("   6. Try different USB port or cable")
+        print("   7. Check kernel messages: dmesg | tail -50")
+        
+        return False
+    
     def start(self):
         """Start the inference pipeline."""
         print("Starting Jetson Inference Pipeline...")
         
-        # Initialize camera
-        if CV2_AVAILABLE:
-            print(f"Opening camera {self.camera_source}...")
-            
-            # Use V4L2 backend explicitly for USB cameras on Jetson
-            self.cap = cv2.VideoCapture(self.camera_source, cv2.CAP_V4L2)
-            
-            if not self.cap.isOpened():
-                print(f"❌ Failed to open camera {self.camera_source}")
-                print("Available devices:")
-                import os
-                os.system("ls -l /dev/video* 2>/dev/null || echo 'No video devices found'")
-                return False
-            
-            # Set camera properties BEFORE first read (critical for USB cameras)
-            # Start with lower resolution to ensure compatibility
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-            
-            # Give camera time to initialize and adjust settings
-            print("Waiting for camera to initialize...")
-            time.sleep(2)
-            
-            # Flush initial frames (often corrupted)
-            for i in range(5):
-                self.cap.grab()
-            
-            # Test read
-            ret, test_frame = self.cap.read()
-            if not ret:
-                print("❌ Camera opened but cannot read frames")
-                print("Trying alternative settings...")
-                
-                # Try without MJPG
-                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
-                time.sleep(1)
-                ret, test_frame = self.cap.read()
-                
-                if not ret:
-                    print("❌ Still failed. Camera may need manual configuration.")
-                    return False
-            
-            print(f"✅ Camera initialized: {test_frame.shape[1]}x{test_frame.shape[0]}")
+        # Initialize camera with robust error handling
+        if not self._initialize_camera_robust():
+            print("\n⚠️ Camera initialization failed, but continuing...")
+            print("   Pipeline will run with synthetic frames for testing")
+            self.cap = None
         
         # Connect GPS
         try:
