@@ -34,7 +34,18 @@ export default function HeatmapView({ densityData, persons, anomaly }) {
 
   return (
     <div className="relative bg-dark rounded-lg overflow-hidden" style={{ height: 400 }}>
-      <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="none">
+      {/* Live Video Feed */}
+      <img 
+        src="http://10.161.127.240:8081/video_feed" 
+        alt="Live Camera Feed"
+        className="absolute inset-0 w-full h-full object-cover"
+        onError={(e) => {
+          e.target.style.display = 'none';
+        }}
+      />
+      
+      {/* Heatmap Overlay */}
+      <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full" preserveAspectRatio="none" style={{ mixBlendMode: 'screen' }}>
         {heatmapCells.map((cell, i) => (
           <rect key={i} x={cell.x} y={cell.y} width={cell.width} height={cell.height} fill={getIntensityColor(cell.intensity)} />
         ))}

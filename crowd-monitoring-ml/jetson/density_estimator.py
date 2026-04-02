@@ -257,12 +257,13 @@ class CrowdDensityEstimator:
         except Exception as e:
             print(f"Failed to load weights: {e}")
     
-    def estimate(self, frame: np.ndarray) -> DensityResult:
+    def estimate(self, frame: np.ndarray, detections: Optional[List] = None) -> DensityResult:
         """
         Estimate crowd density from frame.
         
         Args:
             frame: BGR image as numpy array (H, W, 3)
+            detections: Optional list of person detections for improved accuracy
         
         Returns:
             DensityResult with count, density map, and statistics
@@ -274,7 +275,7 @@ class CrowdDensityEstimator:
         elif self.backend == "mobilecount":
             result = self._estimate_mobilecount(frame)
         else:
-            result = self._estimate_mock(frame)
+            result = self._estimate_mock(frame, detections)
         
         result.inference_time_ms = (time.time() - start_time) * 1000
         self.last_inference_time = result.inference_time_ms
@@ -314,24 +315,42 @@ class CrowdDensityEstimator:
         
         return self._build_result(count, density_np)
     
-    def _estimate_mock(self, frame: np.ndarray) -> DensityResult:
-        """Generate mock density estimation."""
+    def _estimate_mock(self, frame: np.ndarray, detections: Optional[List] = None) -> DensityResult:
+        """Generate mock density estimation using person detections."""
         h, w = frame.shape[:2]
-        
-        # Generate random gaussian blobs
         density_map = np.zeros((h, w), dtype=np.float32)
-        num_clusters = np.random.randint(3, 8)
         
-        for _ in range(num_clusters):
-            cx, cy = np.random.randint(0, w), np.random.randint(0, h)
-            sigma = np.random.randint(20, 50)
-            intensity = np.random.uniform(0.5, 2.0)
+        # If we have person detections, use them for realistic density
+        if detections and len(detections) > 0:
+            sigma = 40  # Kernel spread per person
+            for det in detections:
+                bbox = det.get('bbox', [])
+                if len(bbox) == 4:
+                    # Person center
+                    cx = int((bbox[0] + bbox[2]) / 2)
+                    cy = int((bbox[1] + bbox[3]) / 2)
+                    cx = np.clip(cx, 0, w-1)
+                    cy = np.clip(cy, 0, h-1)
+                    
+                    # Add gaussian kernel at person location
+                    y, x = np.ogrid[:h, :w]
+                    gaussian = np.exp(-((x - cx)**2 + (y - cy)**2) / (2 * sigma**2))
+                    density_map += gaussian * 2.0
             
-            y, x = np.ogrid[:h, :w]
-            gaussian = np.exp(-((x - cx)**2 + (y - cy)**2) / (2 * sigma**2))
-            density_map += gaussian * intensity
-        
-        count = density_map.sum() * 0.1  # Scale to reasonable count
+            count = float(len(detections))
+        else:
+            # Fallback: random blobs
+            num_clusters = np.random.randint(2, 5)
+            for _ in range(num_clusters):
+                cx, cy = np.random.randint(0, w), np.random.randint(0, h)
+                sigma = np.random.randint(30, 60)
+                intensity = np.random.uniform(0.5, 1.5)
+                
+                y, x = np.ogrid[:h, :w]
+                gaussian = np.exp(-((x - cx)**2 + (y - cy)**2) / (2 * sigma**2))
+                density_map += gaussian * intensity
+            
+            count = density_map.sum() * 0.05
         
         return self._build_result(count, density_map)
     

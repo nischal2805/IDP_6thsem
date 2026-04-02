@@ -529,7 +529,7 @@ class JetsonInferencePipeline:
         
         # 3. Density estimation
         density_start = time.time()
-        density_result = self.density_estimator.estimate(frame)
+        density_result = self.density_estimator.estimate(frame, detections)
         density_time = density_result.inference_time_ms
         
         # 4. Optical flow anomaly
