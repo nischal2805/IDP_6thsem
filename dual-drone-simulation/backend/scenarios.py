@@ -33,8 +33,8 @@ SCENARIOS = {
     },
     4: {
         "id": 4,
-        "name": "Stadium Sections",
-        "description": "Multiple reserved sections (A, B, C, D) with auto-redirection when full.",
+        "name": "Stadium Stands (Realistic)",
+        "description": "Main entry with 3 stands (A/B/C), seat assignment, and per-stand gate closure when full.",
         "type": "stadium",
         "has_exit": False,
         "has_zones": True,

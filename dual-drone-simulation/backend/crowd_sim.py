@@ -43,8 +43,10 @@ NORMAL_VELOCITY = 1.2  # m/s
 SLOW_VELOCITY = 0.6  # m/s
 
 # Environment awareness thresholds
-DENSITY_SLOWDOWN_THRESHOLD = 2.0  # people per m² - start slowing down
-DENSITY_STOP_THRESHOLD = 4.0      # people per m² - stop/shuffle
+# NOTE: These values are measured over a 3m awareness radius (~28.27 m²),
+# so thresholds must be low enough to trigger at realistic stadium densities.
+DENSITY_SLOWDOWN_THRESHOLD = 0.15  # people per m² - start slowing down
+DENSITY_STOP_THRESHOLD = 0.30      # people per m² - stop/shuffle
 COMFORT_ZONE_RADIUS = 1.5         # meters - personal space
 AWARENESS_RADIUS = 3.0            # meters - how far agents "see"
 
@@ -309,6 +311,10 @@ class CrowdSimulation:
         elif self.scenario == 2:  # Entry Only
             indoor_count = 10  # Start with fewer, will fill up
             outdoor_count = 15
+        elif scenario_type == "stadium":
+            # Realistic stadium flow starts outside at gates, then fills stands
+            indoor_count = 0
+            outdoor_count = max(outdoor_count, 30)
         elif scenario_type == "bidirectional":
             indoor_count = 30  # More indoor agents to exit
             outdoor_count = 10
@@ -626,17 +632,15 @@ class CrowdSimulation:
     
     def _handle_stadium_logic(self):
         """Handle stadium-specific behavior: stand gates, seating, etc."""
-        # Update stand occupancy counts
-        for stand_id in self.stadium_stands:
-            self.stadium_stands[stand_id]["current"] = 0
-        
-        for agent in self.agents:
-            if agent.state == AgentState.SEATED and agent.assigned_stand:
-                self.stadium_stands[agent.assigned_stand]["current"] += 1
-        
+        # Count occupied seats (reserved + seated) so we don't over-assign while people are walking in.
+        for stand_id, stand in self.stadium_stands.items():
+            stand_seats = self.seats.get(stand_id, [])
+            occupied_count = sum(1 for _, _, occupied in stand_seats if occupied)
+            stand["current"] = occupied_count
+            stand["gate_open"] = occupied_count < stand["capacity"]
+
         # Check if all stands are full - close main gate
-        all_full = all(stand["current"] >= stand["capacity"] 
-                      for stand in self.stadium_stands.values())
+        all_full = all(stand["current"] >= stand["capacity"] for stand in self.stadium_stands.values())
         if all_full:
             self.gate_open = False
     

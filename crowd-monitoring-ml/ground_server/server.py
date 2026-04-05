@@ -119,8 +119,11 @@ async def jetson_listener():
 async def handle_jetson_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     """Handle connection from Jetson device."""
     addr = writer.get_extra_info('peername')
-    print(f"Jetson connected from {addr}")
+    print(f"✅ Jetson connected from {addr}")
     state.connected_jetson = True
+    
+    frame_count = 0
+    data_only_count = 0
     
     try:
         while True:
@@ -132,18 +135,38 @@ async def handle_jetson_connection(reader: asyncio.StreamReader, writer: asyncio
             data_bytes = await reader.readexactly(length)
             packet = json.loads(data_bytes.decode('utf-8'))
             
-            # Check if frame data follows
-            if packet.get('type') == 'inference' and 'frame_size' in packet:
+            packet_type = packet.get('type', 'unknown')
+            
+            # Handle packet with video frame
+            if packet_type == 'inference' and 'frame_size' in packet:
                 frame_size = packet['frame_size']
                 # Read JPEG frame
                 frame_bytes = await reader.readexactly(frame_size)
                 # Store latest frame
                 state.latest_frame = frame_bytes
                 
+                frame_count += 1
+                if frame_count == 1:
+                    print(f"📸 First video frame received: {frame_size/1024:.1f}KB JPEG")
+                elif frame_count % 100 == 0:
+                    print(f"📸 Received {frame_count} video frames (latest: {frame_size/1024:.1f}KB)")
+                
                 # Process inference data
                 await process_jetson_data(packet['data'])
+                
+            # Handle data-only packet (no video frame)
+            elif packet_type == 'inference_data_only':
+                data_only_count += 1
+                if data_only_count == 1:
+                    print(f"⚠️ Jetson sending data WITHOUT video frames - check camera/encoding on Jetson")
+                elif data_only_count % 100 == 0:
+                    print(f"⚠️ Received {data_only_count} data-only packets (no video)")
+                await process_jetson_data(packet['data'])
+                
+            # Handle old format (backwards compatibility)
             else:
-                # Old format without frame
+                if frame_count == 0 and data_only_count == 0:
+                    print(f"⚠️ Jetson using old packet format (no 'type' field) - video won't work")
                 await process_jetson_data(packet)
             
     except asyncio.IncompleteReadError:
@@ -363,7 +386,26 @@ async def get_forecast():
 @app.get("/api/alerts")
 async def get_alerts(limit: int = 50):
     """Get recent alerts."""
-    return state.active_alerts[-limit:]
+    return {"alerts": state.active_alerts[-limit:], "total": len(state.active_alerts)}
+
+
+@app.post("/api/alerts/clear")
+async def clear_test_alerts():
+    """Clear all test alerts (development only)."""
+    global state
+    old_count = len(state.active_alerts)
+    
+    # Clear only test alerts
+    state.active_alerts = [a for a in state.active_alerts if not a.get("alert_id", "").startswith("TEST")]
+    cleared = old_count - len(state.active_alerts)
+    
+    # Broadcast update
+    await broadcast_to_dashboard({
+        "type": "alerts_cleared",
+        "cleared_count": cleared
+    })
+    
+    return {"status": "ok", "cleared": cleared, "remaining": len(state.active_alerts)}
 
 
 @app.get("/api/history")
@@ -391,8 +433,10 @@ async def video_feed():
             }
         )
     else:
-        # Return 404 when no frame available
-        raise HTTPException(status_code=404, detail="No video frame available yet. Waiting for Jetson connection.")
+        # Debug info
+        debug_msg = f"No video frame available. Jetson connected: {state.connected_jetson}, Frames received: {state.total_frames}"
+        print(f"⚠️ Video feed requested but no frame: {debug_msg}")
+        raise HTTPException(status_code=404, detail=debug_msg)
 
 
 @app.post("/api/test/alert")

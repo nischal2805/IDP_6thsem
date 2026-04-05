@@ -25,9 +25,23 @@ const COLORS = {
   agent: 0x3b82f6,
   agentSlow: 0x06b6d4,
   agentPanic: 0xef4444,
+  agentSeated: 0x8b5cf6,     // Purple for seated
+  agentQueuing: 0xf59e0b,    // Amber for queuing
+  agentFindingSeat: 0x22d3ee, // Cyan for finding seat
   heatmapLow: 0x22c55e,
   heatmapMed: 0xeab308,
   heatmapHigh: 0xef4444,
+};
+
+// Agent behavioral state codes (from backend)
+const AGENT_STATE = {
+  QUEUING: 0,
+  WALKING: 1,
+  ENTERING: 2,
+  FINDING_SEAT: 3,
+  SEATED: 4,
+  EVACUATING: 5,
+  WANDERING: 6
 };
 
 export default function FloorCanvas({ simState, onCanvasClick }) {
@@ -95,9 +109,10 @@ export default function FloorCanvas({ simState, onCanvasClick }) {
     const gateState = simState?.gate || 'OPEN';
     const zones = simState?.zones || null;
     const lanes = simState?.lanes || null;
+    const stadiumStats = simState?.stadium || null;
     
-    drawStaticElements(staticContainer, gateState, scenarioType, zones, lanes);
-  }, [simState?.scenario_type, simState?.gate]);
+    drawStaticElements(staticContainer, gateState, scenarioType, zones, lanes, stadiumStats);
+  }, [simState?.scenario_type, simState?.gate, simState?.stadium?.total_seated]);
 
   // Update on state change
   useEffect(() => {
@@ -135,7 +150,7 @@ export default function FloorCanvas({ simState, onCanvasClick }) {
   );
 }
 
-function drawStaticElements(container, gateState, scenarioType, zones, lanes) {
+function drawStaticElements(container, gateState, scenarioType, zones, lanes, stadiumStats) {
   const graphics = new PIXI.Graphics();
   
   // Indoor area background
@@ -180,7 +195,7 @@ function drawStaticElements(container, gateState, scenarioType, zones, lanes) {
   graphics.lineTo(doorRight, INDOOR_HEIGHT * SCALE);
 
   // Draw scenario-specific elements
-  drawScenarioSpecificElements(graphics, scenarioType, zones, lanes);
+  drawScenarioSpecificElements(graphics, scenarioType, zones, lanes, stadiumStats);
 
   container.addChild(graphics);
 
@@ -188,38 +203,96 @@ function drawStaticElements(container, gateState, scenarioType, zones, lanes) {
   drawScenarioLabels(container, scenarioType);
 }
 
-function drawScenarioSpecificElements(graphics, scenarioType, zones, lanes) {
+function drawScenarioSpecificElements(graphics, scenarioType, zones, lanes, stadiumStats) {
   graphics.lineStyle(2, 0x6366f1, 0.6); // Indigo dividers
   
   switch (scenarioType) {
     case 'stadium':
-      // 4 stadium sections with cross dividers
-      graphics.moveTo(CANVAS_WIDTH / 2, 0);
-      graphics.lineTo(CANVAS_WIDTH / 2, INDOOR_HEIGHT * SCALE);
-      graphics.moveTo(0, INDOOR_HEIGHT * SCALE / 2);
-      graphics.lineTo(CANVAS_WIDTH, INDOOR_HEIGHT * SCALE / 2);
-      
-      // Add section labels
-      const sectionLabels = ['Section A', 'Section B', 'Section C', 'Section D'];
-      const positions = [
-        [CANVAS_WIDTH / 4, INDOOR_HEIGHT * SCALE / 4],
-        [3 * CANVAS_WIDTH / 4, INDOOR_HEIGHT * SCALE / 4],
-        [CANVAS_WIDTH / 4, 3 * INDOOR_HEIGHT * SCALE / 4],
-        [3 * CANVAS_WIDTH / 4, 3 * INDOOR_HEIGHT * SCALE / 4],
+      // Draw 3 realistic stadium stands (left, center, right)
+      const stands = [
+        { id: 'left', name: 'Stand A', x: 0, y: 0, w: 6, h: 12, entrance: [3, 12] },
+        { id: 'center', name: 'Stand B', x: 7, y: 0, w: 6, h: 8, entrance: [10, 8] },
+        { id: 'right', name: 'Stand C', x: 14, y: 0, w: 6, h: 12, entrance: [17, 12] }
       ];
       
-      sectionLabels.forEach((label, i) => {
-        const text = new PIXI.Text(label, {
+      stands.forEach(stand => {
+        const sx = stand.x * SCALE;
+        const sy = (INDOOR_HEIGHT - stand.y - stand.h) * SCALE;
+        const sw = stand.w * SCALE;
+        const sh = stand.h * SCALE;
+        
+        // Get stand status
+        const standStats = stadiumStats?.stands?.[stand.id];
+        const isFull = standStats?.current >= standStats?.capacity;
+        const utilization = standStats?.utilization || 0;
+        
+        // Stand background with fill based on capacity
+        const fillColor = isFull ? 0xef4444 : (utilization > 80 ? 0xf59e0b : 0x22c55e);
+        graphics.beginFill(fillColor, 0.15);
+        graphics.lineStyle(2, fillColor, 0.8);
+        graphics.drawRect(sx, sy, sw, sh);
+        graphics.endFill();
+        
+        // Draw seat rows (horizontal lines)
+        graphics.lineStyle(1, 0x6366f1, 0.3);
+        const rowSpacing = 1.2 * SCALE;
+        for (let row = sy + rowSpacing; row < sy + sh - 5; row += rowSpacing) {
+          graphics.moveTo(sx + 5, row);
+          graphics.lineTo(sx + sw - 5, row);
+        }
+        
+        // Draw entrance gate
+        const ex = stand.entrance[0] * SCALE;
+        const ey = (INDOOR_HEIGHT - stand.entrance[1]) * SCALE;
+        graphics.lineStyle(3, isFull ? 0xef4444 : 0x22c55e);
+        graphics.moveTo(ex - 10, ey);
+        graphics.lineTo(ex + 10, ey);
+        
+        // Stand label with capacity
+        const labelText = standStats 
+          ? `${stand.name} (${standStats.current}/${standStats.capacity})`
+          : stand.name;
+        const text = new PIXI.Text(labelText, {
           fontFamily: 'Inter, sans-serif',
           fontSize: 10,
-          fill: 0x6366f1,
+          fill: isFull ? 0xef4444 : 0x6366f1,
           fontWeight: 'bold',
         });
         text.anchor.set(0.5);
-        text.x = positions[i][0];
-        text.y = positions[i][1];
+        text.x = sx + sw / 2;
+        text.y = sy + 12;
         graphics.parent?.addChild(text);
+        
+        // Gate status label
+        if (stadiumStats) {
+          const gateText = new PIXI.Text(isFull ? '🔒 FULL' : '✓ OPEN', {
+            fontFamily: 'Inter, sans-serif',
+            fontSize: 8,
+            fill: isFull ? 0xef4444 : 0x22c55e,
+          });
+          gateText.anchor.set(0.5);
+          gateText.x = ex;
+          gateText.y = ey + 10;
+          graphics.parent?.addChild(gateText);
+        }
       });
+      
+      // Draw central walkway/concourse
+      graphics.lineStyle(1, 0x8888aa, 0.4);
+      graphics.beginFill(0x1a1a2e, 0.5);
+      graphics.drawRect(0, (INDOOR_HEIGHT - 6) * SCALE, CANVAS_WIDTH, 6 * SCALE);
+      graphics.endFill();
+      
+      // Walkway label
+      const walkwayLabel = new PIXI.Text('CONCOURSE', {
+        fontFamily: 'Inter, sans-serif',
+        fontSize: 9,
+        fill: 0x8888aa,
+      });
+      walkwayLabel.anchor.set(0.5);
+      walkwayLabel.x = CANVAS_WIDTH / 2;
+      walkwayLabel.y = (INDOOR_HEIGHT - 3) * SCALE;
+      graphics.parent?.addChild(walkwayLabel);
       break;
 
     case 'multi_lane':
@@ -421,7 +494,7 @@ function drawAgents(container, agents) {
   const graphics = new PIXI.Graphics();
 
   for (const agent of agents) {
-    const [x, y, vx, vy, isSlow, isPanicking] = agent;
+    const [x, y, vx, vy, isSlow, isPanicking, behaviorState] = agent;
     
     // Convert sim coordinates to canvas coordinates
     // Indoor: y >= 0, Outdoor: y < 0
@@ -436,7 +509,13 @@ function drawAgents(container, agents) {
 
     // Choose color based on agent state
     let color = COLORS.agent;
-    if (isPanicking) {
+    if (behaviorState === AGENT_STATE.SEATED) {
+      color = COLORS.agentSeated;
+    } else if (behaviorState === AGENT_STATE.QUEUING) {
+      color = COLORS.agentQueuing;
+    } else if (behaviorState === AGENT_STATE.FINDING_SEAT) {
+      color = COLORS.agentFindingSeat;
+    } else if (isPanicking) {
       color = COLORS.agentPanic;
     } else if (isSlow) {
       color = COLORS.agentSlow;
@@ -444,11 +523,15 @@ function drawAgents(container, agents) {
 
     // Draw agent as circle
     graphics.beginFill(color);
-    graphics.drawCircle(canvasX, canvasY, isSlow ? 4 : 5);
+    if (behaviorState === AGENT_STATE.SEATED) {
+      graphics.drawRect(canvasX - 3, canvasY - 2, 6, 4);
+    } else {
+      graphics.drawCircle(canvasX, canvasY, isSlow ? 4 : 5);
+    }
     graphics.endFill();
 
     // Draw velocity direction indicator
-    if (vx !== 0 || vy !== 0) {
+    if (behaviorState !== AGENT_STATE.SEATED && (vx !== 0 || vy !== 0)) {
       const speed = Math.sqrt(vx * vx + vy * vy);
       if (speed > 0.1) {
         const dirX = (vx / speed) * 6;

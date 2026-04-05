@@ -73,29 +73,26 @@ class MultiZoneManager:
             self._init_bidirectional()
     
     def _init_stadium_sections(self):
-        """Stadium with 4 reserved sections (A, B, C, D)."""
-        section_size = (8, 8)
+        """Stadium with 3 stands (A, B, C) aligned with crowd_sim layout."""
         sections = [
-            ("A", "Section A", (5, 5)),
-            ("B", "Section B", (15, 5)),
-            ("C", "Section C", (5, 15)),
-            ("D", "Section D", (15, 15))
+            ("left", "Stand A (Left)", (3, 14), (6, 12), 40),
+            ("center", "Stand B (Center)", (10, 16), (6, 8), 50),
+            ("right", "Stand C (Right)", (17, 14), (6, 12), 40),
         ]
-        
-        for zone_id, name, pos in sections:
+
+        for zone_id, name, pos, size, cap in sections:
             self.zones[zone_id] = Zone(
                 id=zone_id,
                 name=name,
-                capacity=50,
+                capacity=cap,
                 position=pos,
-                size=section_size,
+                size=size,
                 redirect_target=None
             )
-        
-        # Set redirection chain: A→B→C→D
-        self.zones["A"].redirect_target = "B"
-        self.zones["B"].redirect_target = "C"
-        self.zones["C"].redirect_target = "D"
+
+        # Redirect chain across stands as they near capacity.
+        self.zones["left"].redirect_target = "center"
+        self.zones["center"].redirect_target = "right"
     
     def _init_multi_lane(self):
         """Multiple entry lanes with load balancing."""

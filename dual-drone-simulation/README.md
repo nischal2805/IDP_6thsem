@@ -97,7 +97,7 @@ Connect to `ws://localhost:8000/ws` for real-time updates.
 ```json
 {
   "tick": 150,
-  "agents": [[x, y, vx, vy, is_slow, is_panicking], ...],
+  "agents": [[x, y, vx, vy, is_slow, is_panicking, behavior_state, local_density, assigned_stand], ...],
   "indoor_count": 47,
   "outdoor_count": 23,
   "capacity": 100,
@@ -106,7 +106,17 @@ Connect to `ws://localhost:8000/ws` for real-time updates.
   "crush_risk_index": 2.3,
   "indoor_heatmap": [[...]],
   "outdoor_heatmap": [[...]],
-  "history": [{"t": 0, "count": 10, "crush_risk": 1.1}, ...]
+  "history": [{"t": 0, "count": 10, "crush_risk": 1.1}, ...],
+  "stadium": {
+    "stands": {
+      "left": {"name": "Stand A (Left)", "current": 22, "capacity": 40, "gate_open": true, "utilization": 55.0},
+      "center": {"name": "Stand B (Center)", "current": 36, "capacity": 50, "gate_open": true, "utilization": 72.0},
+      "right": {"name": "Stand C (Right)", "current": 40, "capacity": 40, "gate_open": false, "utilization": 100.0}
+    },
+    "total_seated": 98,
+    "total_capacity": 130,
+    "all_full": false
+  }
 }
 ```
 

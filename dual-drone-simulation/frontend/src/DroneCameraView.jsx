@@ -434,7 +434,7 @@ function drawAgents(container, agents, zone, canvasHeight) {
   const graphics = new PIXI.Graphics();
 
   for (const agent of agents) {
-    const [x, y, vx, vy, isSlow, isPanicking] = agent;
+    const [x, y, vx, vy, isSlow, isPanicking, behaviorState] = agent;
     
     // Convert sim coordinates to canvas coordinates
     const canvasX = x * SCALE;
@@ -464,11 +464,15 @@ function drawAgents(container, agents, zone, canvasHeight) {
 
     // Draw agent
     graphics.beginFill(color, 0.9);
-    graphics.drawCircle(canvasX, canvasY, isSlow ? 4 : 5);
+    if (behaviorState === 4) {
+      graphics.drawRect(canvasX - 3, canvasY - 2, 6, 4); // seated marker
+    } else {
+      graphics.drawCircle(canvasX, canvasY, isSlow ? 4 : 5);
+    }
     graphics.endFill();
 
     // Draw velocity direction indicator
-    if (vx !== 0 || vy !== 0) {
+    if (behaviorState !== 4 && (vx !== 0 || vy !== 0)) {
       const speed = Math.sqrt(vx * vx + vy * vy);
       if (speed > 0.1) {
         const dirX = (vx / speed) * 8;

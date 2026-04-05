@@ -434,24 +434,53 @@ class JetsonInferencePipeline:
             result = convert_types(result)
             
             # Encode frame as JPEG
-            _, jpeg_buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            jpeg_bytes = jpeg_buffer.tobytes()
+            jpeg_bytes = None
+            if CV2_AVAILABLE and frame is not None:
+                try:
+                    success, jpeg_buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    if success and jpeg_buffer is not None:
+                        jpeg_bytes = jpeg_buffer.tobytes()
+                        if self.frame_count <= 1:
+                            print(f"📤 Frame encoded: {len(jpeg_bytes)} bytes JPEG")
+                    else:
+                        print(f"⚠️ cv2.imencode failed (success={success})")
+                except Exception as encode_error:
+                    print(f"⚠️ Frame encoding error: {encode_error}")
             
-            # Create packet with JSON + JPEG
-            packet = {
-                'type': 'inference',
-                'data': result,
-                'frame_size': len(jpeg_bytes)
-            }
-            
-            json_bytes = json.dumps(packet).encode('utf-8')
-            
-            # Send: [json_length(4)][json_data][jpeg_data]
-            self.socket.sendall(
-                struct.pack('>I', len(json_bytes)) + 
-                json_bytes + 
-                jpeg_bytes
-            )
+            # Create packet - always include type for proper server handling
+            if jpeg_bytes and len(jpeg_bytes) > 0:
+                # Full packet with video frame
+                packet = {
+                    'type': 'inference',
+                    'data': result,
+                    'frame_size': len(jpeg_bytes)
+                }
+                json_bytes = json.dumps(packet).encode('utf-8')
+                
+                # Send: [json_length(4)][json_data][jpeg_data]
+                self.socket.sendall(
+                    struct.pack('>I', len(json_bytes)) + 
+                    json_bytes + 
+                    jpeg_bytes
+                )
+                
+                # Log first and periodic sends
+                if self.frame_count == 1:
+                    print(f"📤 First frame sent: JSON={len(json_bytes)} bytes, JPEG={len(jpeg_bytes)} bytes")
+                elif self.frame_count % 100 == 0:
+                    print(f"✅ Sent frame {self.frame_count} with {len(jpeg_bytes)/1024:.1f}KB JPEG")
+            else:
+                # Data-only packet (no video frame)
+                packet = {
+                    'type': 'inference_data_only',
+                    'data': result
+                }
+                json_bytes = json.dumps(packet).encode('utf-8')
+                self.socket.sendall(struct.pack('>I', len(json_bytes)) + json_bytes)
+                
+                if self.frame_count == 1:
+                    print(f"⚠️ Sending data without video frame (encoding failed)")
+                    
         except Exception as e:
             print(f"⚠️ Send error: {e}")
             import traceback
@@ -499,7 +528,11 @@ class JetsonInferencePipeline:
             
             # Send to server
             if self.connected:
-                self._send_result(result, frame)
+                try:
+                    self._send_result(result, frame)
+                except Exception as send_err:
+                    print(f"❌ Failed to send data: {send_err}")
+                    self.connected = False
             
             # Display
             if self.enable_display and CV2_AVAILABLE:
@@ -524,7 +557,8 @@ class JetsonInferencePipeline:
                 runtime = time.time() - self.start_time
                 fps = self.frame_count / runtime if runtime > 0 else 0
                 alert_count = len(result.get('alerts', []))
-                print(f"📊 Frame: {self.frame_count} | FPS: {fps:.1f} | Persons: {result['person_count']} | Alerts: {alert_count} | Connected: {self.connected}")
+                frame_size = frame.nbytes if hasattr(frame, 'nbytes') else 0
+                print(f"📊 Frame: {self.frame_count} | FPS: {fps:.1f} | Persons: {result['person_count']} | Alerts: {alert_count} | Connected: {self.connected} | FrameSize: {frame_size/1024:.1f}KB")
     
     def _process_frame(self, frame: np.ndarray) -> Dict:
         """
