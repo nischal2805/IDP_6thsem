@@ -50,6 +50,25 @@ DENSITY_STOP_THRESHOLD = 0.30      # people per m² - stop/shuffle
 COMFORT_ZONE_RADIUS = 1.5         # meters - personal space
 AWARENESS_RADIUS = 3.0            # meters - how far agents "see"
 
+# Tiered admission (Scenario 6)
+TIER_WEIGHTS = [("vip", 0.2), ("general", 0.6), ("student", 0.2)]
+TIER_LANE_X = {
+    "vip": DOOR_X - 3.5,
+    "general": DOOR_X,
+    "student": DOOR_X + 3.5
+}
+TIER_CAPACITY = {"vip": 20, "general": 100, "student": 50}
+TIER_BANDS_Y = {
+    "vip": (13.0, INDOOR_HEIGHT - 1.5),
+    "general": (7.5, 12.5),
+    "student": (2.0, 7.0)
+}
+
+# Multidirectional counter-flow (Scenario 7)
+BIDIRECTIONAL_INBOUND_X = DOOR_X - 0.9
+BIDIRECTIONAL_OUTBOUND_X = DOOR_X + 0.9
+BIDIRECTIONAL_TURNAROUND_Y = INDOOR_HEIGHT - 2.0
+
 
 class AgentState(Enum):
     """Behavioral states for realistic crowd behavior."""
@@ -88,6 +107,10 @@ class Agent:
     patience: float = 1.0                 # How long willing to wait (0-1)
     time_in_state: float = 0.0            # Time spent in current state
 
+    # Scenario-specific metadata
+    tier: str = "general"                 # Scenario 6: vip/general/student
+    flow_role: str = "neutral"            # Scenario 7: inbound/outbound/neutral
+
 
 class CrowdSimulation:
     """
@@ -118,6 +141,10 @@ class CrowdSimulation:
         self.bidirectional_mode = "entry"  # "entry" or "exit"
         self.bidirectional_timer = 0.0
         self.bidirectional_interval = 10.0  # Switch every 10 seconds
+
+        # Predictive demand surge windows (Scenario 8)
+        self.predictive_surge_timer = 0.0
+        self.predictive_surge_active = False
         
         # Stadium configuration (Scenario 4 - enhanced)
         self.stadium_stands = self._init_stadium_stands()
@@ -243,6 +270,8 @@ class CrowdSimulation:
         self.gate_open = True
         self.bidirectional_mode = "entry"
         self.bidirectional_timer = 0.0
+        self.predictive_surge_timer = 0.0
+        self.predictive_surge_active = False
         
         # Reset stadium state
         self.stadium_stands = self._init_stadium_stands()
@@ -272,16 +301,28 @@ class CrowdSimulation:
         """Spawn an agent in the outdoor queue area."""
         scenario_type = self.scenario_config.get("type")
         
-        # Scenario 7: Bidirectional - only spawn in entry mode
-        if scenario_type == "bidirectional" and self.bidirectional_mode != "entry":
+        # Scenario 7: reduce inflow during exit-priority windows (both directions still active)
+        if scenario_type == "bidirectional" and self.bidirectional_mode == "exit" and random.random() < 0.45:
             return None
         
+        tier = "general"
+        flow_role = "neutral"
+
         # Random position in outdoor zone
         if scenario_type == "multi_lane":
             # Spawn in one of 4 lanes
             lane = random.randint(0, 3)
             x = DOOR_X - 6 + lane * 4
             y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
+        elif scenario_type == "tiered":
+            tier = self._choose_tier()
+            lane_x = self._get_tier_lane_x(tier)
+            x = random.uniform(max(1.0, lane_x - 0.6), min(INDOOR_WIDTH - 1.0, lane_x + 0.6))
+            y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
+        elif scenario_type == "bidirectional":
+            x = random.uniform(BIDIRECTIONAL_INBOUND_X - 0.6, BIDIRECTIONAL_INBOUND_X + 0.6)
+            y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
+            flow_role = "inbound"
         else:
             x = random.uniform(DOOR_X - 5, DOOR_X + 5)
             y = random.uniform(-OUTDOOR_HEIGHT + 2, -2)
@@ -290,15 +331,20 @@ class CrowdSimulation:
         goal_x = DOOR_X
         goal_y = 1.0  # Just inside the door
         
-        # 10% chance of being slow (except for tiered scenario)
+        # 10% chance of being slow (tiered/bidirectional use scenario-specific behavior)
         if scenario_type == "tiered":
-            # 20% VIP, 60% General, 20% Student
-            tier = random.choices(["vip", "general", "student"], weights=[0.2, 0.6, 0.2])[0]
+            goal_x = self._get_tier_lane_x(tier)
             is_slow = tier == "student"
+        elif scenario_type == "bidirectional":
+            goal_x = BIDIRECTIONAL_INBOUND_X
+            is_slow = random.random() < SLOW_AGENT_RATIO
         else:
             is_slow = random.random() < SLOW_AGENT_RATIO
         
-        return self.spawn_agent(x, y, goal_x, goal_y, is_slow)
+        agent = self.spawn_agent(x, y, goal_x, goal_y, is_slow)
+        agent.tier = tier
+        agent.flow_role = flow_role
+        return agent
     
     def spawn_initial_crowd(self, indoor_count: int = 20, outdoor_count: int = 10):
         """Spawn initial crowd for simulation start."""
@@ -315,6 +361,9 @@ class CrowdSimulation:
             # Realistic stadium flow starts outside at gates, then fills stands
             indoor_count = 0
             outdoor_count = max(outdoor_count, 30)
+        elif scenario_type == "tiered":
+            indoor_count = max(indoor_count, 12)
+            outdoor_count = max(outdoor_count, 20)
         elif scenario_type == "bidirectional":
             indoor_count = 30  # More indoor agents to exit
             outdoor_count = 10
@@ -324,11 +373,23 @@ class CrowdSimulation:
             x = random.uniform(2, INDOOR_WIDTH - 2)
             y = random.uniform(2, INDOOR_HEIGHT - 2)
             
-            goal_x, goal_y = self._get_initial_indoor_goal(scenario_type)
-            
-            is_slow = random.random() < SLOW_AGENT_RATIO
+            if scenario_type == "tiered":
+                tier = self._choose_tier()
+                goal_x, goal_y = self._get_tier_goal(tier)
+                is_slow = tier == "student"
+            else:
+                goal_x, goal_y = self._get_initial_indoor_goal(scenario_type)
+                tier = "general"
+                is_slow = random.random() < SLOW_AGENT_RATIO
+
             agent = self.spawn_agent(x, y, goal_x, goal_y, is_slow)
             agent.is_indoor = True
+            agent.tier = tier
+
+            if scenario_type == "bidirectional":
+                agent.flow_role = "outbound"
+                agent.goal_x = BIDIRECTIONAL_OUTBOUND_X
+                agent.goal_y = -1.0
         
         # Outdoor agents
         for _ in range(outdoor_count):
@@ -345,9 +406,86 @@ class CrowdSimulation:
         elif scenario_type == "bidirectional":
             # Exit through door (bottom)
             return DOOR_X, -1
+        elif scenario_type == "tiered":
+            return self._get_tier_goal("general")
+        elif scenario_type == "predictive":
+            return EXIT_X + random.uniform(-1.0, 1.0), INDOOR_HEIGHT + 1
         else:
             # Random wandering
             return random.uniform(3, INDOOR_WIDTH - 3), random.uniform(3, INDOOR_HEIGHT - 3)
+
+    def _choose_tier(self) -> str:
+        """Choose admission tier based on weighted demand."""
+        return random.choices(
+            [tier for tier, _ in TIER_WEIGHTS],
+            weights=[weight for _, weight in TIER_WEIGHTS]
+        )[0]
+
+    def _get_tier_lane_x(self, tier: str) -> float:
+        """Get lane center X for tier queue."""
+        lane_x = TIER_LANE_X.get(tier, DOOR_X)
+        return min(max(lane_x, 1.0), INDOOR_WIDTH - 1.0)
+
+    def _get_tier_goal(self, tier: str) -> Tuple[float, float]:
+        """Get indoor roaming target constrained to tier band."""
+        y_min, y_max = TIER_BANDS_Y.get(tier, TIER_BANDS_Y["general"])
+        return random.uniform(2.0, INDOOR_WIDTH - 2.0), random.uniform(y_min, y_max)
+
+    def _get_scenario_speed_modifier(self, agent: Agent) -> float:
+        """Additional speed modifier for scenario-specific flow control."""
+        scenario_type = self.scenario_config.get("type")
+
+        if scenario_type == "tiered":
+            tier_speed = {"vip": 1.2, "general": 1.0, "student": 0.82}
+            return tier_speed.get(agent.tier, 1.0)
+
+        if scenario_type == "bidirectional":
+            if agent.flow_role == "inbound":
+                return 1.15 if self.bidirectional_mode == "entry" else 0.9
+            if agent.flow_role == "outbound":
+                return 1.15 if self.bidirectional_mode == "exit" else 0.95
+
+        return 1.0
+
+    def _update_tiered_goals(self):
+        """Keep tiered agents inside their assigned admission bands."""
+        for agent in self.agents:
+            if not agent.is_indoor:
+                continue
+
+            if agent.tier not in TIER_BANDS_Y:
+                agent.tier = "general"
+
+            dist = np.sqrt((agent.x - agent.goal_x)**2 + (agent.y - agent.goal_y)**2)
+            if dist < 1.0 or agent.goal_y <= 1.5:
+                agent.goal_x, agent.goal_y = self._get_tier_goal(agent.tier)
+                agent.state = AgentState.WALKING
+
+    def _update_bidirectional_flow(self):
+        """Maintain simultaneous inbound/outbound streams for scenario 7."""
+        for agent in self.agents:
+            if not agent.is_indoor:
+                agent.flow_role = "inbound"
+                agent.goal_x = BIDIRECTIONAL_INBOUND_X
+                agent.goal_y = 1.0
+                continue
+
+            if agent.flow_role not in ("inbound", "outbound"):
+                agent.flow_role = "outbound" if agent.y > INDOOR_HEIGHT * 0.6 else "inbound"
+
+            if agent.flow_role == "inbound":
+                if agent.y >= BIDIRECTIONAL_TURNAROUND_Y:
+                    agent.flow_role = "outbound"
+                    agent.goal_x = BIDIRECTIONAL_OUTBOUND_X
+                    agent.goal_y = -1.0
+                else:
+                    agent.goal_x = BIDIRECTIONAL_INBOUND_X
+                    agent.goal_y = BIDIRECTIONAL_TURNAROUND_Y
+                    agent.state = AgentState.WALKING
+            else:
+                agent.goal_x = BIDIRECTIONAL_OUTBOUND_X
+                agent.goal_y = -1.0
+                agent.state = AgentState.WALKING
     
     def _build_state_array(self) -> np.ndarray:
         """Build numpy state array for PySocialForce."""
@@ -359,6 +497,7 @@ class CrowdSimulation:
             vel = SLOW_VELOCITY if agent.is_slow else NORMAL_VELOCITY
             # Apply density-based speed modifier
             vel *= agent.speed_modifier
+            vel *= self._get_scenario_speed_modifier(agent)
             
             # Seated agents don't move
             if agent.state == AgentState.SEATED:
@@ -561,11 +700,22 @@ class CrowdSimulation:
                 else:
                     self.bidirectional_mode = "entry"
                     self._switch_to_entry_mode()
+            self._update_bidirectional_flow()
+
+        # Predictive demand surge windows (Scenario 8)
+        effective_spawn_rate = self.spawn_rate
+        if scenario_type == "predictive":
+            self.predictive_surge_timer += dt
+            surge_cycle = self.predictive_surge_timer % 24.0
+            self.predictive_surge_active = 8.0 <= surge_cycle <= 14.0
+            effective_spawn_rate = 3.6 if self.predictive_surge_active else 1.8
+        elif scenario_type == "bidirectional" and self.bidirectional_mode == "exit":
+            effective_spawn_rate = max(0.8, self.spawn_rate * 0.6)
         
         # Spawn new outdoor agents (scenario-dependent)
-        if self.spawn_rate > 0:
+        if effective_spawn_rate > 0:
             self.spawn_timer += dt
-            if self.spawn_timer >= 1.0 / self.spawn_rate:
+            if self.spawn_timer >= 1.0 / effective_spawn_rate:
                 self.spawn_timer = 0.0
                 if len([a for a in self.agents if not a.is_indoor]) < 50:  # Cap outdoor
                     self.spawn_outdoor_agent()
@@ -621,6 +771,8 @@ class CrowdSimulation:
         elif self.scenario_config.get("has_exit"):
             if scenario_type == "basic":
                 self._handle_exits()  # Top exit (Scenario 1)
+            elif scenario_type == "predictive":
+                self._handle_exits()  # Predictive uses same physical exit with proactive gating
             elif scenario_type == "bidirectional":
                 self._handle_bidirectional_exits()  # Door exit (Scenario 7)
             elif scenario_type == "evacuation":
@@ -629,6 +781,8 @@ class CrowdSimulation:
         # Update goals for wandering agents (Scenario 2)
         if self.scenario == 2:
             self._update_wandering_goals()
+        elif scenario_type == "tiered":
+            self._update_tiered_goals()
     
     def _handle_stadium_logic(self):
         """Handle stadium-specific behavior: stand gates, seating, etc."""
@@ -661,6 +815,7 @@ class CrowdSimulation:
             # Base velocity with speed modifier for density
             vel = SLOW_VELOCITY if agent.is_slow else NORMAL_VELOCITY
             vel *= agent.speed_modifier
+            vel *= self._get_scenario_speed_modifier(agent)
             
             # Panicking agents move faster but erratically
             if agent.is_panicking:
@@ -729,11 +884,21 @@ class CrowdSimulation:
                         agent.is_panicking = True
                         agent.state = AgentState.EVACUATING
                         self._assign_evacuation_exit(agent)
+                    elif scenario_type == "tiered":
+                        if agent.tier not in TIER_BANDS_Y:
+                            agent.tier = self._choose_tier()
+                        agent.goal_x, agent.goal_y = self._get_tier_goal(agent.tier)
+                        agent.state = AgentState.WALKING
                     elif scenario_type == "bidirectional":
-                        # Wander briefly, then exit
-                        agent.goal_x = random.uniform(5, INDOOR_WIDTH - 5)
-                        agent.goal_y = random.uniform(5, INDOOR_HEIGHT - 5)
-                        agent.state = AgentState.WANDERING
+                        # Entering stream climbs the inbound lane, then returns outbound.
+                        agent.flow_role = "inbound"
+                        agent.goal_x = BIDIRECTIONAL_INBOUND_X
+                        agent.goal_y = BIDIRECTIONAL_TURNAROUND_Y
+                        agent.state = AgentState.WALKING
+                    elif scenario_type == "predictive":
+                        agent.goal_x = EXIT_X + random.uniform(-1.0, 1.0)
+                        agent.goal_y = INDOOR_HEIGHT + 1
+                        agent.state = AgentState.WALKING
                     else:
                         # Random wandering
                         agent.goal_x = random.uniform(3, INDOOR_WIDTH - 3)

@@ -319,6 +319,6 @@ async def get_scenarios_endpoint():
 
 if __name__ == "__main__":
     print("Starting Dual Drone Crowd Simulation Server...")
-    print("WebSocket endpoint: ws://localhost:8000/ws")
+    print("WebSocket endpoint: ws://localhost:8005/ws")
     print("Open the frontend to connect and control the simulation.")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8005)

@@ -24,7 +24,7 @@ export default function ControlPanel({
   const [scenarios, setScenarios] = useState([]);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/scenarios')
+    fetch('http://localhost:8005/api/scenarios')
       .then(response => response.json())
       .then(data => setScenarios(data.scenarios))
       .catch(error => {
